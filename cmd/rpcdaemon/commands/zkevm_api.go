@@ -372,7 +372,7 @@ func (api *ZkEvmAPIImpl) getBlockRangeWitness(ctx context.Context, db kv.RoDB, s
 		api.ethApi._engine,
 	)
 
-	return generator.GenerateWitness(tx, ctx, blockNr, endBlockNr, debug)
+	return generator.GenerateWitness(tx, ctx, blockNr, endBlockNr, debug, api.config.WitnessFull)
 }
 
 func (api *ZkEvmAPIImpl) GetBatchWitness(ctx context.Context, batchNumber uint64) (hexutility.Bytes, error) {

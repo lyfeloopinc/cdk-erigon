@@ -193,4 +193,5 @@ var DefaultFlags = []cli.Flag{
 	&utils.DataStreamPort,
 	&utils.WitnessStageFlag,
 	&utils.StoreNblocksWitness,
+	&utils.WitnessFullFlag,
 }

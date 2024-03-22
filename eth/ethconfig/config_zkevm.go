@@ -35,6 +35,7 @@ type Zk struct {
 
 	WitnessStage        bool
 	StoreNblocksWitness uint64
+	WitnessFull         bool
 }
 
 var DefaultZkConfig = &Zk{}
