@@ -61,6 +61,7 @@ func ApplyFlagsForZkConfig(ctx *cli.Context, cfg *ethconfig.Config) {
 		AllowPreEIP155Transactions:  ctx.Bool(utils.AllowPreEIP155Transactions.Name),
 		WitnessStage:                ctx.Bool(utils.WitnessStageFlag.Name),
 		StoreNblocksWitness:         ctx.Uint64(utils.StoreNblocksWitness.Name),
+		WitnessFull:                 ctx.Bool(utils.WitnessFullFlag.Name),
 	}
 
 	checkFlag(utils.L2ChainIdFlag.Name, cfg.Zk.L2ChainId)

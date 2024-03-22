@@ -42,9 +42,10 @@ type WitnessCfg struct {
 	historyV3          bool
 	enableWitnessStage bool
 	storeNblocks       uint64
+	witnessFull        bool
 }
 
-func GenerateWitnessCfg(db kv.RwDB, tmpDir datadir.Dirs, blockReader services.FullBlockReader, engine consensus.Engine, chainConfig *chain.Config, agg *libstate.AggregatorV3, historyV3 bool, enableWitnessStage bool, storeNblocks uint64) WitnessCfg {
+func GenerateWitnessCfg(db kv.RwDB, tmpDir datadir.Dirs, blockReader services.FullBlockReader, engine consensus.Engine, chainConfig *chain.Config, agg *libstate.AggregatorV3, historyV3 bool, enableWitnessStage bool, storeNblocks uint64, witnessFull bool) WitnessCfg {
 	return WitnessCfg{
 		db:                 db,
 		tmpDir:             tmpDir,
@@ -55,6 +56,7 @@ func GenerateWitnessCfg(db kv.RwDB, tmpDir datadir.Dirs, blockReader services.Fu
 		historyV3:          historyV3,
 		enableWitnessStage: enableWitnessStage,
 		storeNblocks:       storeNblocks,
+		witnessFull:        witnessFull,
 	}
 }
 
@@ -178,7 +180,7 @@ func SpawnWitnessStage(
 			}
 		}
 
-		w, err = wg.GenerateWitnessByBatch(tx, ctx, b, false)
+		w, err = wg.GenerateWitnessByBatch(tx, ctx, b, false, cfg.witnessFull)
 		if err != nil {
 			return err
 		}
@@ -333,7 +335,7 @@ func NewWitnessGenerator(
 	}
 }
 
-func (g *WitnessGenerator) GenerateWitnessByBatch(tx kv.Tx, ctx context.Context, batch uint64, debug bool) ([]byte, error) {
+func (g *WitnessGenerator) GenerateWitnessByBatch(tx kv.Tx, ctx context.Context, batch uint64, debug, full bool) ([]byte, error) {
 	hermezDb := hermez_db.NewHermezDbReader(tx)
 
 	startBlock, err := hermezDb.GetLowestBlockInBatch(batch)
@@ -351,10 +353,10 @@ func (g *WitnessGenerator) GenerateWitnessByBatch(tx kv.Tx, ctx context.Context,
 		startBlock = 1
 	}
 
-	return g.GenerateWitness(tx, ctx, startBlock, endBlock, debug)
+	return g.GenerateWitness(tx, ctx, startBlock, endBlock, debug, full)
 }
 
-func (g *WitnessGenerator) GenerateWitness(tx kv.Tx, ctx context.Context, startBlock, endBlock uint64, debug bool) ([]byte, error) {
+func (g *WitnessGenerator) GenerateWitness(tx kv.Tx, ctx context.Context, startBlock, endBlock uint64, debug, full bool) ([]byte, error) {
 	if startBlock > endBlock {
 		return nil, ErrEndBeforeStart
 	}
@@ -505,14 +507,16 @@ func (g *WitnessGenerator) GenerateWitness(tx kv.Tx, ctx context.Context, startB
 		}
 	}
 
-	// todo [zkevm] we need to use this retain list rather than using the always true retain decider
-	rl, err := tds.ResolveSMTRetainList()
-	if err != nil {
-		return nil, err
-	}
+	var rl trie.RetainDecider
+	// if full is true, we will send all the nodes to the witness
+	rl = &trie.AlwaysTrueRetainDecider{}
 
-	// if you ever need to send the full witness then you can use this always true trimmer and the whole state will be sent
-	//rl := &trie.AlwaysTrueRetainDecider{}
+	if !full {
+		rl, err = tds.ResolveSMTRetainList()
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	eridb := db2.NewEriDb(batch)
 	smtTrie := smt.NewSMT(eridb)
