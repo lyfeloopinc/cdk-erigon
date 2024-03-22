@@ -485,7 +485,7 @@ var (
 	WitnessStageFlag = cli.BoolFlag{
 		Name:  "zkevm.witness-stage",
 		Usage: "Enable/Diable witness stage",
-		Value: true,
+		Value: false,
 	}
 	StoreNblocksWitness = cli.Uint64Flag{
 		Name:  "zkevm.store-n-blocks-witness",
