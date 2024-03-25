@@ -10,6 +10,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"time"
+	"errors"
+)
+
+var (
+	ErrExecutorStateRootMismatch = errors.New("state root mismatch from the executor")
+	ErrExecutorUnplannedError    = errors.New("error during remote execution")
 )
 
 type Config struct {
@@ -131,13 +137,14 @@ func responseCheck(resp *executor.ProcessBatchResponseV2, erigonStateRoot common
 	if resp == nil {
 		return false, fmt.Errorf("nil response")
 	}
+
 	if resp.Error != executor.ExecutorError_EXECUTOR_ERROR_UNSPECIFIED &&
 		resp.Error != executor.ExecutorError_EXECUTOR_ERROR_NO_ERROR {
-		return false, fmt.Errorf("error in response: %s", resp.Error)
+		return false, fmt.Errorf("%w: error in response: %s", ErrExecutorUnplannedError, resp.Error)
 	}
 
 	if !bytes.Equal(resp.NewStateRoot, erigonStateRoot.Bytes()) {
-		return false, fmt.Errorf("erigon state root mismatch: expected %s, got %s", erigonStateRoot, resp.NewStateRoot)
+		return false, fmt.Errorf("%w: expected %s, got %s", ErrExecutorStateRootMismatch, erigonStateRoot, resp.NewStateRoot)
 	}
 
 	return true, nil

@@ -299,6 +299,13 @@ type TxPool struct {
 	// exposed publicly so anything wanting to get "best" transactions can ensure a flush isn't happening and
 	// vice versa
 	flushMtx *sync.Mutex
+
+	// limbo bad contains transactions from a batch that we know to be bad from the executor
+	limboKnownBad LimboTransactions
+	// limbo unknown contains transactions from batches beyond the known bad batch.  These transactions
+	// were included in batches beyond the known bad and are likely healthy but want inclusion in to new
+	// batches before checking the rest of the pool
+	limboUnknown []LimboTransactions
 }
 
 func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, zkCfg *ethconfig.Zk, cache kvcache.Cache, chainID uint256.Int, shanghaiTime *big.Int) (*TxPool, error) {
@@ -1948,19 +1955,25 @@ func (b *BySenderAndNonce) replaceOrInsert(mt *metaTx) *metaTx {
 // It's more expensive to maintain "slice sort" invariant, but it allow do cheap copy of
 // pending.best slice for mining (because we consider txs and metaTx are immutable)
 type PendingPool struct {
-	best  *bestSlice
-	worst *WorstQueue
-	limit int
-	t     SubPoolType
+	best               *bestSlice
+	worst              *WorstQueue
+	yieldedNotVerified *yieldedNotVerifiedSlice
+	limit              int
+	t                  SubPoolType
 }
 
 func NewPendingSubPool(t SubPoolType, limit int) *PendingPool {
-	return &PendingPool{limit: limit, t: t, best: &bestSlice{ms: []*metaTx{}}, worst: &WorstQueue{ms: []*metaTx{}}}
+	return &PendingPool{limit: limit, t: t, best: &bestSlice{ms: []*metaTx{}}, worst: &WorstQueue{ms: []*metaTx{}}, yieldedNotVerified: &yieldedNotVerifiedSlice{ms: []*metaTx{}}}
 }
 
 // bestSlice - is similar to best queue, but with O(n log n) complexity and
 // it maintains element.bestIndex field
 type bestSlice struct {
+	ms             []*metaTx
+	pendingBaseFee uint64
+}
+
+type yieldedNotVerifiedSlice struct {
 	ms             []*metaTx
 	pendingBaseFee uint64
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/ledgerwatch/erigon/ethdb/olddb"
 	"github.com/ledgerwatch/erigon/smt/pkg/utils"
 	"github.com/ledgerwatch/log/v3"
+	"runtime"
 )
 
 type SmtDbTx interface {
@@ -81,6 +82,16 @@ func (m *EriDb) OpenBatch(quitCh <-chan struct{}) {
 }
 
 func (m *EriDb) CommitBatch() error {
+	// TODO: [limbo] remove
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 1024)
+			n := runtime.Stack(buf, false)
+			fmt.Println("Recovered from panic:", r)
+			fmt.Println("Stack trace of the panic:")
+			fmt.Println(string(buf[:n]))
+		}
+	}()
 	if _, ok := m.tx.(ethdb.DbWithPendingMutations); !ok {
 		return nil // don't roll back a kvRw tx
 	}

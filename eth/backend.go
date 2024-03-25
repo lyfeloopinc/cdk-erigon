@@ -191,6 +191,7 @@ type Ethereum struct {
 	dataStream *datastreamer.StreamServer
 	l1Syncer   *syncer.L1Syncer
 	etherMan   *etherman.Client
+	limbo      *legacy_executor_verifier.Limbo
 }
 
 func splitAddrIntoHostAndPort(addr string) (host string, port int, err error) {
@@ -731,6 +732,9 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		if sequencer.IsSequencer() {
 			// if we are sequencing transactions, we do the sequencing loop...
 
+			// create the limbo helper
+			backend.limbo = legacy_executor_verifier.NewLimbo()
+
 			backend.etherMan = newEtherMan(cfg)
 			l1Topics := [][]libcommon.Hash{{contracts.UpdateL1InfoTreeTopic, contracts.InitialSequenceBatchesTopic}}
 			backend.l1Syncer = syncer.NewL1Syncer(
@@ -756,9 +760,18 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 					GrpcUrls: cfg.ExecutorUrls,
 					Timeout:  time.Second * 5,
 				}
-				executors := legacy_executor_verifier.NewExecutors(levCfg)
-				for _, e := range executors {
-					legacyExecutors = append(legacyExecutors, e)
+
+				// TODO [limbo] - can remove after development
+				if len(cfg.ExecutorUrls) == 1 && cfg.ExecutorUrls[0] == "predictable" {
+					executors := legacy_executor_verifier.NewExecutorPredictables(1)
+					for _, e := range executors {
+						legacyExecutors = append(legacyExecutors, e)
+					}
+				} else {
+					executors := legacy_executor_verifier.NewExecutors(levCfg)
+					for _, e := range executors {
+						legacyExecutors = append(legacyExecutors, e)
+					}
 				}
 			}
 
@@ -769,6 +782,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 				backend.chainDB,
 				witnessGenerator,
 				backend.l1Syncer,
+				backend.limbo,
 			)
 
 			verifier.StartWork()
@@ -789,6 +803,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 				backend.txPool2,
 				backend.txPool2DB,
 				verifier,
+				backend.limbo,
 			)
 
 			backend.syncUnwindOrder = zkStages.ZkSequencerUnwindOrder
@@ -1245,7 +1260,7 @@ func (s *Ethereum) Start() error {
 	s.sentriesClient.StartStreamLoops(s.sentryCtx)
 	time.Sleep(10 * time.Millisecond) // just to reduce logs order confusion
 
-	go stages2.StageLoop(s.sentryCtx, s.chainConfig, s.chainDB, s.stagedSync, s.sentriesClient.Hd, s.notifications, s.sentriesClient.UpdateHead, s.waitForStageLoopStop, s.config.Sync.LoopThrottle)
+	go stages2.StageLoop(s.sentryCtx, s.chainConfig, s.chainDB, s.stagedSync, s.sentriesClient.Hd, s.notifications, s.sentriesClient.UpdateHead, s.waitForStageLoopStop, s.config.Sync.LoopThrottle, s.limbo)
 
 	return nil
 }

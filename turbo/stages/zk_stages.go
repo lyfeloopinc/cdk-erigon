@@ -98,6 +98,7 @@ func NewSequencerZkStages(ctx context.Context,
 	txPool *txpool.TxPool,
 	txPoolDb kv.RwDB,
 	verifier *legacy_executor_verifier.LegacyExecutorVerifier,
+	limbo *legacy_executor_verifier.Limbo,
 ) []*stagedsync.Stage {
 	dirs := cfg.Dirs
 	blockReader := snapshotsync.NewBlockReaderWithSnapshots(snapshots, cfg.TransactionsV3)
@@ -106,11 +107,13 @@ func NewSequencerZkStages(ctx context.Context,
 	// Hence we run it in the test mode.
 	runInTestMode := cfg.ImportMode
 
-	return zkStages.SequencerZkStages(ctx,
+	return zkStages.SequencerZkStages(
+		ctx,
 		stagedsync.StageCumulativeIndexCfg(db),
+		zkStages.StageLimboCfg(db, limbo, txPool),
 		zkStages.StageL1SequencerSyncCfg(db, cfg.Zk, l1Syncer),
 		zkStages.StageDataStreamCatchupCfg(datastreamServer, db, cfg.Genesis.Config.ChainID.Uint64()),
-		zkStages.StageSequencerInterhashesCfg(db, notifications.Accumulator),
+		zkStages.StageSequencerInterhashesCfg(db, notifications.Accumulator, blockReader),
 		zkStages.StageSequenceBlocksCfg(
 			db,
 			cfg.Prune,
@@ -131,10 +134,12 @@ func NewSequencerZkStages(ctx context.Context,
 			cfg.Zk,
 			txPool,
 			txPoolDb,
+			verifier,
+			limbo,
 		),
 		stagedsync.StageHashStateCfg(db, dirs, cfg.HistoryV3, agg),
 		zkStages.StageZkInterHashesCfg(db, true, true, false, dirs.Tmp, blockReader, controlServer.Hd, cfg.HistoryV3, agg, cfg.Zk),
-		zkStages.StageSequencerExecutorVerifyCfg(db, verifier),
+		zkStages.StageSequencerExecutorVerifyCfg(db, verifier, txPool, limbo),
 		stagedsync.StageHistoryCfg(db, cfg.Prune, dirs.Tmp),
 		stagedsync.StageLogIndexCfg(db, cfg.Prune, dirs.Tmp),
 		stagedsync.StageCallTracesCfg(db, cfg.Prune, 0, dirs.Tmp),

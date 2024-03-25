@@ -450,30 +450,33 @@ func zkIncrementIntermediateHashes(logPrefix string, s *stagedsync.StageState, d
 	return hash, nil
 }
 
-func unwindZkSMT(logPrefix string, from, to uint64, db kv.RwTx, checkRoot bool, expectedRootHash *libcommon.Hash, quit <-chan struct{}) (libcommon.Hash, error) {
+func unwindZkSMT(logPrefix string, from, to uint64, tx kv.RwTx, checkRoot bool, expectedRootHash *libcommon.Hash, quit <-chan struct{}) (libcommon.Hash, error) {
+	if logPrefix == "" {
+		logPrefix = "witness-gen"
+	}
 	log.Info(fmt.Sprintf("[%s] Unwind trie hashes started", logPrefix))
 	defer log.Info(fmt.Sprintf("[%s] Unwind ended", logPrefix))
 
-	eridb := db2.NewEriDb(db)
+	eridb := db2.NewEriDb(tx)
 	dbSmt := smt.NewSMT(eridb)
 
 	log.Info(fmt.Sprintf("[%s]", logPrefix), "last root", libcommon.BigToHash(dbSmt.LastRoot()))
 
 	eridb.OpenBatch(quit)
 
-	ac, err := db.CursorDupSort(kv.AccountChangeSet)
+	ac, err := tx.CursorDupSort(kv.AccountChangeSet)
 	if err != nil {
 		return trie.EmptyRoot, err
 	}
 	defer ac.Close()
 
-	sc, err := db.CursorDupSort(kv.StorageChangeSet)
+	sc, err := tx.CursorDupSort(kv.StorageChangeSet)
 	if err != nil {
 		return trie.EmptyRoot, err
 	}
 	defer sc.Close()
 
-	currentPsr := state2.NewPlainStateReader(db)
+	currentPsr := state2.NewPlainStateReader(tx)
 
 	total := from - to + 1
 	progressChan, stopPrinter := zk.ProgressPrinter(fmt.Sprintf("[%s] Progress unwinding", logPrefix), total)
@@ -541,7 +544,7 @@ func unwindZkSMT(logPrefix string, from, to uint64, db kv.RwTx, checkRoot bool, 
 			}
 		}
 
-		err = db.ForPrefix(kv.StorageChangeSet, dupSortKey, func(sk, sv []byte) error {
+		err = tx.ForPrefix(kv.StorageChangeSet, dupSortKey, func(sk, sv []byte) error {
 			changesetKey := sk[length.BlockNum:]
 			address, _ := dbutils.PlainParseStoragePrefix(changesetKey)
 

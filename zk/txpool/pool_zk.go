@@ -11,6 +11,7 @@ import (
 	"github.com/ledgerwatch/erigon-lib/types"
 	"github.com/ledgerwatch/erigon/common/math"
 	"github.com/ledgerwatch/log/v3"
+	types2 "github.com/ledgerwatch/erigon/core/types"
 )
 
 /*
@@ -200,6 +201,7 @@ func (p *TxPool) best(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableG
 		}
 
 		txs.Txs[count] = rlpTx
+		p.UnsafeAddUnverified(mt) // add the tx to the unverified list
 		copy(txs.Senders.At(count), sender.Bytes())
 		txs.IsLocal[count] = isLocal
 		toSkip.Add(mt.Tx.IDHash)
@@ -213,4 +215,66 @@ func (p *TxPool) best(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableG
 		}
 	}
 	return true, count, nil
+}
+
+// happens when a tx is yielded from pending
+func (p *TxPool) UnsafeAddUnverified(mt *metaTx) {
+	p.pending.yieldedNotVerified.ms = append(p.pending.yieldedNotVerified.ms, mt)
+}
+
+// called to remove a tx permanently if it fails verification
+func (p *TxPool) RemoveUnverifiedTx(idHash [32]byte) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	for _, mt := range p.pending.best.ms {
+		if mt.Tx.IDHash == idHash {
+			p.pending.best.UnsafeRemove(mt)
+			break
+		}
+	}
+}
+
+// called at the end of limbo mode, only after the tx failing verification is removed
+func (p *TxPool) PutBackYieldedNotVerifiedTxs() {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	for _, mt := range p.pending.yieldedNotVerified.ms {
+		foundInBest := false
+
+		for _, bestMt := range p.pending.best.ms {
+			if mt.Tx.IDHash == bestMt.Tx.IDHash {
+				foundInBest = true
+				break
+			}
+		}
+
+		if !foundInBest {
+			p.pending.best.ms = append(p.pending.best.ms, mt)
+		}
+	}
+
+	p.pending.yieldedNotVerified.ms = make([]*metaTx, 0)
+}
+
+type LimboTransactions struct {
+	BatchNumber  uint64
+	Transactions []types2.Transaction
+}
+
+func (p *TxPool) SetLimboBadTransactions(transactions LimboTransactions) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	p.limboKnownBad = transactions
+}
+
+func (p *TxPool) GetLimboBadTransactions() LimboTransactions {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	return p.limboKnownBad
+}
+
+func (p *TxPool) AddLimboUnknownTransactions(transactions LimboTransactions) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	p.limboUnknown = append(p.limboUnknown, transactions)
 }

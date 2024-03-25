@@ -124,6 +124,9 @@ func UnwindHashStateStage(u *UnwindState, s *StageState, tx kv.RwTx, cfg HashSta
 	}
 
 	logPrefix := u.LogPrefix()
+	if u.ID == "" {
+		logPrefix = "witness-gen"
+	}
 	if err = unwindHashStateStageImpl(logPrefix, u, s, tx, cfg, ctx); err != nil {
 		return err
 	}

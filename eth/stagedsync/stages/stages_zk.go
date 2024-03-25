@@ -19,6 +19,7 @@ package stages
 var (
 	// ZK stages
 	L1Syncer                    SyncStage = "L1Syncer"
+	Limbo                       SyncStage = "Limbo"
 	L1VerificationsBatchNo      SyncStage = "L1VerificationsBatchNo"
 	Batches                     SyncStage = "Batches"
 	HighestHashableL2BlockNo    SyncStage = "HighestHashableL2BlockNo"

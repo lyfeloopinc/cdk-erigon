@@ -13,6 +13,7 @@ import (
 func SequencerZkStages(
 	ctx context.Context,
 	cumulativeIndex stagedsync.CumulativeIndexCfg,
+	limboCfg LimboCfg,
 	l1InfoTreeCfg L1SequencerSyncCfg,
 	dataStreamCatchupCfg DataStreamCatchupCfg,
 	sequencerInterhashesCfg SequencerInterhashesCfg,
@@ -59,6 +60,19 @@ func SequencerZkStages(
 			},
 		},
 		{
+			ID:          stages2.Limbo,
+			Description: "Limbo mode check and tx handling",
+			Forward: func(firstCycle bool, badBlockUnwind bool, s *stages.StageState, u stages.Unwinder, tx kv.RwTx, quiet bool) error {
+				return SpawnLimboStage(s, u, tx, ctx, firstCycle, limboCfg)
+			},
+			Unwind: func(firstCycle bool, u *stages.UnwindState, s *stages.StageState, tx kv.RwTx) error {
+				return UnwindLimboStage()
+			},
+			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
+				return PruneLimboStage()
+			},
+		},
+		{
 			/*
 				TODO:
 				we need to have another "execution" stage, that takes data from the txpool instead of from headers/bodies.
@@ -101,7 +115,7 @@ func SequencerZkStages(
 				return SpawnSequencerInterhashesStage(s, u, tx, ctx, sequencerInterhashesCfg, firstCycle, quiet)
 			},
 			Unwind: func(firstCycle bool, u *stages.UnwindState, s *stages.StageState, tx kv.RwTx) error {
-				return UnwindSequencerInterhashsStage(u, s, tx, ctx, sequencerInterhashesCfg, firstCycle)
+				return UnwindSequencerInterhashesStage(u, s, tx, ctx, sequencerInterhashesCfg, firstCycle)
 			},
 			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
 				return PruneSequencerInterhashesStage(p, tx, sequencerInterhashesCfg, ctx, firstCycle)
@@ -487,6 +501,7 @@ var AllStagesZk = []stages2.SyncStage{
 var ZkSequencerUnwindOrder = stages.UnwindOrder{
 	stages2.IntermediateHashes, // need to unwind SMT before we remove history
 	stages2.Execution,
+	stages2.SequenceExecutorVerify, // [limbo] todo - this stage can probably manage it's own lifecycle...
 	stages2.HashState,
 	stages2.CallTraces,
 	stages2.AccountHistoryIndex,

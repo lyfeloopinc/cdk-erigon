@@ -36,6 +36,7 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
 	"github.com/ledgerwatch/erigon/turbo/stages/bodydownload"
 	"github.com/ledgerwatch/erigon/turbo/stages/headerdownload"
+	"github.com/ledgerwatch/erigon/zk/legacy_executor_verifier"
 )
 
 func SendPayloadStatus(hd *headerdownload.HeaderDownload, headBlockHash libcommon.Hash, err error) {
@@ -77,6 +78,7 @@ func StageLoop(
 	updateHead func(ctx context.Context, headHeight, headTime uint64, hash libcommon.Hash, td *uint256.Int),
 	waitForDone chan struct{},
 	loopMinTime time.Duration,
+	limbo *legacy_executor_verifier.Limbo,
 ) {
 	defer close(waitForDone)
 	initialCycle := true
@@ -109,7 +111,9 @@ func StageLoop(
 			continue
 		}
 
-		initialCycle = false
+		// [limbo] initial cycle is false, or true if we are in limbo (prevents tx commit)
+		inLimbo, _, _ := limbo.CheckLimboMode()
+		initialCycle = inLimbo
 		hd.AfterInitialCycle()
 
 		if loopMinTime != 0 {

@@ -46,10 +46,13 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/shards"
 	"github.com/ledgerwatch/erigon/zk/erigon_db"
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
+	"github.com/ledgerwatch/erigon/zk/legacy_executor_verifier"
 	"github.com/ledgerwatch/erigon/zk/tx"
 	"github.com/ledgerwatch/erigon/zk/txpool"
 	zktypes "github.com/ledgerwatch/erigon/zk/types"
 	"github.com/ledgerwatch/secp256k1"
+	db2 "github.com/ledgerwatch/erigon/smt/pkg/db"
+	"github.com/ledgerwatch/erigon/smt/pkg/smt"
 )
 
 const (
@@ -61,8 +64,6 @@ const (
 	transactionGasLimit = 30000000
 
 	totalVirtualCounterSmtLevel = 80 // todo [zkevm] this should be read from the db
-
-	yieldSize = 100 // arbitrary number defining how many transactions to yield from the pool at once
 )
 
 var (
@@ -101,6 +102,9 @@ type SequenceBlockCfg struct {
 
 	txPool   *txpool.TxPool
 	txPoolDb kv.RwDB
+
+	verifier *legacy_executor_verifier.LegacyExecutorVerifier
+	limbo    *legacy_executor_verifier.Limbo
 }
 
 func StageSequenceBlocksCfg(
@@ -125,6 +129,8 @@ func StageSequenceBlocksCfg(
 
 	txPool *txpool.TxPool,
 	txPoolDb kv.RwDB,
+	verifier *legacy_executor_verifier.LegacyExecutorVerifier,
+	limbo *legacy_executor_verifier.Limbo,
 ) SequenceBlockCfg {
 	return SequenceBlockCfg{
 		db:            db,
@@ -146,6 +152,8 @@ func StageSequenceBlocksCfg(
 		zk:            zk,
 		txPool:        txPool,
 		txPoolDb:      txPoolDb,
+		verifier:      verifier,
+		limbo:         limbo,
 	}
 }
 
@@ -163,8 +171,24 @@ func SpawnSequencingStage(
 	log.Info(fmt.Sprintf("[%s] Starting sequencing stage", logPrefix))
 	defer log.Info(fmt.Sprintf("[%s] Finished sequencing stage", logPrefix))
 
+	limboMode, limboState, _ := cfg.limbo.CheckLimboMode()
+	if limboMode {
+		// if we're not in a state to start handling limbo then we need to just exit the stage cleanly and loop
+		// through to the limbo stage again
+		if limboState != legacy_executor_verifier.LimboRecovery {
+			return nil
+		}
+
+		log.Info(fmt.Sprintf("[%s] Limbo mode detected, handling recovery", logPrefix))
+
+		return handleLimbo(ctx, s, cfg)
+	}
+
 	freshTx := tx == nil
 	if freshTx {
+		if limboMode {
+			return errors.New("cannot start sequencing in limbo mode with no transaction")
+		}
 		tx, err = cfg.db.BeginRw(ctx)
 		if err != nil {
 			return err
@@ -216,26 +240,17 @@ func SpawnSequencingStage(
 		return err
 	}
 
-	nextBlockNum := executionAt + 1
-	thisBatch := lastBatch + 1
-	newBlockTimestamp := uint64(time.Now().Unix())
-
-	header := &types.Header{
-		ParentHash: parentBlock.Hash(),
-		Coinbase:   constMiner,
-		Difficulty: blockDifficulty,
-		Number:     new(big.Int).SetUint64(nextBlockNum),
-		GasLimit:   getGasLimit(uint16(forkId)),
-		Time:       newBlockTimestamp,
-	}
-
 	stateReader := state.NewPlainStateReader(tx)
 	ibs := state.New(stateReader)
 
-	// here we have a special case and need to inject in the initial batch on the network before
-	// we can continue accepting transactions from the pool
+	header, batchCounters, l1TreeUpdate, l1TreeUpdateIndex, err := prepNewBlockHeader(tx, hermezDb, ibs, executionAt, parentBlock, forkId, cfg.chainConfig)
+	if err != nil {
+		return err
+	}
+
+	// handle the injected batch
 	if executionAt == 0 {
-		err = processInjectedInitialBatch(hermezDb, ibs, tx, cfg, header, parentBlock, stateReader, forkId)
+		err := processInjectedInitialBatch(hermezDb, ibs, tx, cfg, header, parentBlock, stateReader, forkId)
 		if err != nil {
 			return err
 		}
@@ -245,21 +260,6 @@ func SpawnSequencingStage(
 			}
 		}
 		return nil
-	}
-
-	batchCounters := vm.NewBatchCounterCollector(totalVirtualCounterSmtLevel, uint16(forkId))
-
-	// whilst in the 1 batch = 1 block = 1 tx flow we can immediately add in the changeL2BlockTx calculation
-	// as this is the first tx we can skip the overflow check
-	batchCounters.StartNewBlock()
-
-	// calculate and store the l1 info tree index used for this block
-	l1TreeUpdateIndex, l1TreeUpdate, err := calculateNextL1TreeUpdateToUse(tx, hermezDb)
-	if err != nil {
-		return err
-	}
-	if err = hermezDb.WriteBlockL1InfoTreeIndex(nextBlockNum, l1TreeUpdateIndex); err != nil {
-		return err
 	}
 
 	// start waiting for a new transaction to arrive
@@ -278,9 +278,21 @@ LOOP:
 		select {
 		case <-ticker.C:
 			log.Info(fmt.Sprintf("[%s] Waiting some more for txs from the pool...", logPrefix))
+			inLimbo, _, _ := cfg.limbo.CheckLimboMode()
+			if inLimbo {
+				return nil // force the stages to advance, so we can start this stage in limbo recovery
+			}
 		default:
+			limboMode, _, _ = cfg.limbo.CheckLimboMode()
+			if limboMode {
+				// exit immediately - the limbo stage will pick up the next steps
+				return nil
+			}
+
+			var transactions []types.Transaction
+
 			cfg.txPool.LockFlusher()
-			transactions, err := getNextTransactions(cfg, executionAt, forkId, yielded)
+			transactions, err = getNextTransactions(cfg, executionAt, forkId, yielded)
 			if err != nil {
 				return err
 			}
@@ -325,16 +337,11 @@ LOOP:
 		ger = l1TreeUpdate.GER
 	}
 
-	parentRoot := parentBlock.Root()
-	if err = handleStateForNewBlockStarting(cfg.chainConfig, nextBlockNum, newBlockTimestamp, &parentRoot, l1TreeUpdate, ibs); err != nil {
+	if err = finaliseBlock(cfg, tx, hermezDb, ibs, stateReader, header, parentBlock, addedTransactions, addedReceipts, lastBatch+1, ger, l1BlockHash, forkId); err != nil {
 		return err
 	}
 
-	if err = finaliseBlock(cfg, tx, hermezDb, ibs, stateReader, header, parentBlock, addedTransactions, addedReceipts, thisBatch, ger, l1BlockHash, forkId); err != nil {
-		return err
-	}
-
-	if err = updateSequencerProgress(tx, nextBlockNum, thisBatch, l1TreeUpdateIndex); err != nil {
+	if err = updateSequencerProgress(tx, header.Number.Uint64(), lastBatch+1, l1TreeUpdateIndex); err != nil {
 		return err
 	}
 
@@ -347,11 +354,61 @@ LOOP:
 	return nil
 }
 
+func prepNewBlockHeader(
+	tx kv.Tx,
+	hermezDb *hermez_db.HermezDb,
+	ibs *state.IntraBlockState,
+	executionAt uint64,
+	parentBlock *types.Block,
+	forkId uint64,
+	chainCfg *chain.Config,
+) (*types.Header, *vm.BatchCounterCollector, *zktypes.L1InfoTreeUpdate, uint64, error) {
+	nextBlockNum := executionAt + 1
+	newBlockTimestamp := uint64(time.Now().Unix())
+
+	header := &types.Header{
+		ParentHash: parentBlock.Hash(),
+		Coinbase:   constMiner,
+		Difficulty: blockDifficulty,
+		Number:     new(big.Int).SetUint64(nextBlockNum),
+		GasLimit:   getGasLimit(uint16(forkId)),
+		Time:       newBlockTimestamp,
+		BaseFee:    big.NewInt(0),
+	}
+
+	// here we have a special case and need to inject in the initial batch on the network before
+	// we can continue accepting transactions from the pool
+
+	batchCounters := vm.NewBatchCounterCollector(totalVirtualCounterSmtLevel, uint16(forkId))
+
+	// whilst in the 1 batch = 1 block = 1 tx flow we can immediately add in the changeL2BlockTx calculation
+	// as this is the first tx we can skip the overflow check
+	batchCounters.StartNewBlock()
+
+	// calculate and store the l1 info tree index used for this block
+	l1TreeUpdateIndex, l1TreeUpdate, err := calculateNextL1TreeUpdateToUse(tx, hermezDb)
+	if err != nil {
+		return header, batchCounters, l1TreeUpdate, l1TreeUpdateIndex, err
+	}
+	if err = hermezDb.WriteBlockL1InfoTreeIndex(nextBlockNum, l1TreeUpdateIndex); err != nil {
+		return header, batchCounters, l1TreeUpdate, l1TreeUpdateIndex, err
+	}
+
+	parentRoot := parentBlock.Root()
+	if err = handleStateForNewBlockStarting(chainCfg, nextBlockNum, newBlockTimestamp, &parentRoot, l1TreeUpdate, ibs); err != nil {
+		return header, batchCounters, l1TreeUpdate, l1TreeUpdateIndex, err
+	}
+
+	return header, batchCounters, l1TreeUpdate, l1TreeUpdateIndex, nil
+}
+
 func getNextTransactions(cfg SequenceBlockCfg, executionAt, forkId uint64, alreadyYielded mapset.Set[[32]byte]) ([]types.Transaction, error) {
 	var transactions []types.Transaction
 	var err error
 	var count int
 	killer := time.NewTicker(50 * time.Millisecond)
+
+	yieldSize := uint16(100)
 LOOP:
 	for {
 		// ensure we don't spin forever looking for transactions, attempt for a while then exit up to the caller
@@ -761,7 +818,7 @@ func attemptAddTransaction(
 // will be called at the start of every new block created within a batch to figure out if there is a new GER
 // we can use or not.  In the special case that this is the first block we just return 0 as we need to use the
 // 0 index first before we can use 1+
-func calculateNextL1TreeUpdateToUse(tx kv.RwTx, hermezDb *hermez_db.HermezDb) (uint64, *zktypes.L1InfoTreeUpdate, error) {
+func calculateNextL1TreeUpdateToUse(tx kv.Tx, hermezDb *hermez_db.HermezDb) (uint64, *zktypes.L1InfoTreeUpdate, error) {
 	// always default to 0 and only update this if the next available index has reached finality
 	var nextL1Index uint64 = 0
 
@@ -803,6 +860,128 @@ func updateSequencerProgress(tx kv.RwTx, newHeight uint64, newBatch uint64, l1In
 	if err := stages.SaveStageProgress(tx, stages.HighestUsedL1InfoIndex, l1InfoIndex); err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func handleLimbo(
+	ctx context.Context,
+	s *stagedsync.StageState,
+	cfg SequenceBlockCfg,
+) error {
+	tx, err := cfg.db.BeginRo(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	executionAt, err := s.ExecutionAt(tx)
+	if err != nil {
+		return err
+	}
+
+	parentBlock, err := rawdb.ReadBlockByNumber(tx, executionAt)
+	if err != nil {
+		return err
+	}
+
+	lastBatch, err := stages.GetStageProgress(tx, stages.HighestSeenBatchNumber)
+	if err != nil {
+		return err
+	}
+
+	hermezDb := hermez_db.NewHermezDbReader(tx)
+	forkId, err := hermezDb.GetForkId(lastBatch)
+	if err != nil {
+		return err
+	}
+
+	limboTx := cfg.txPool.GetLimboBadTransactions()
+
+	// start to create blocks using 1 more transaction each time to check with the executor
+	for i := 0; i < len(limboTx.Transactions); i++ {
+		transactions := limboTx.Transactions[:i+1]
+		if err := runInLimboTransactions(ctx, cfg, transactions, executionAt, parentBlock, forkId, lastBatch); err != nil {
+			return err
+		}
+
+	}
+
+	return nil
+}
+
+func runInLimboTransactions(
+	ctx context.Context,
+	cfg SequenceBlockCfg,
+	transactionsToAttempt []types.Transaction,
+	executionAt uint64,
+	parentBlock *types.Block,
+	forkId uint64,
+	lastBatch uint64,
+) error {
+	tx, err := cfg.db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	hermezDb := hermez_db.NewHermezDb(tx)
+
+	stateReader := state.NewPlainStateReader(tx)
+	ibs := state.New(stateReader)
+
+	header, batchCounters, l1TreeUpdate, _, err := prepNewBlockHeader(tx, hermezDb, ibs, executionAt, parentBlock, forkId, cfg.chainConfig)
+	var addedReceipts []*types.Receipt
+	var addedTransactions []types.Transaction
+	for _, transaction := range transactionsToAttempt {
+		receipt, overflow, err := attemptAddTransaction(tx, cfg, batchCounters, header, parentBlock.Header(), transaction, ibs, hermezDb)
+		if err != nil {
+			return err
+		}
+		if overflow {
+			// we really shouldn't get here as we didn't the first time around but better safe than sorry
+			return errors.New("overflow encountered whilst handling limbo mode")
+		}
+		addedReceipts = append(addedReceipts, receipt)
+	}
+
+	l1BlockHash := common.Hash{}
+	ger := common.Hash{}
+	if l1TreeUpdate != nil {
+		l1BlockHash = l1TreeUpdate.ParentHash
+		ger = l1TreeUpdate.GER
+	}
+
+	if err = finaliseBlock(cfg, tx, hermezDb, ibs, stateReader, header, parentBlock, addedTransactions, addedReceipts, lastBatch+1, ger, l1BlockHash, forkId); err != nil {
+		return err
+	}
+
+	fakeState := &stagedsync.StageState{
+		BlockNumber: executionAt,
+	}
+	eridb := db2.NewEriDb(tx)
+	smt := smt.NewSMT(eridb)
+	newRoot, err := zkIncrementIntermediateHashes("limbo-execution", fakeState, tx, eridb, smt, executionAt+1, false, nil, ctx.Done())
+	if err != nil {
+		return err
+	}
+
+	verifierRequest := &legacy_executor_verifier.VerifierRequest{
+		BatchNumber: lastBatch + 1,
+		StateRoot:   newRoot,
+	}
+
+	// some updates to allow for witness generation
+	if err = stages.SaveStageProgress(tx, stages.Execution, executionAt+1); err != nil {
+		return err
+	}
+
+	executorResponse, err := cfg.verifier.VerifySynchronously(tx, verifierRequest)
+	if err != nil {
+		return err
+	}
+
+	_ = executorResponse
 
 	return nil
 }

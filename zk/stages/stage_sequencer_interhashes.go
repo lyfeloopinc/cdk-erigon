@@ -14,20 +14,24 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/shards"
 	"github.com/ledgerwatch/erigon/zk/erigon_db"
 	rawdbZk "github.com/ledgerwatch/erigon/zk/rawdb"
+	"github.com/ledgerwatch/erigon/turbo/services"
 )
 
 type SequencerInterhashesCfg struct {
 	db          kv.RwDB
 	accumulator *shards.Accumulator
+	blockReader services.FullBlockReader
 }
 
 func StageSequencerInterhashesCfg(
 	db kv.RwDB,
 	accumulator *shards.Accumulator,
+	blockReader services.FullBlockReader,
 ) SequencerInterhashesCfg {
 	return SequencerInterhashesCfg{
 		db:          db,
 		accumulator: accumulator,
+		blockReader: blockReader,
 	}
 }
 
@@ -158,14 +162,49 @@ func SpawnSequencerInterhashesStage(
 	return nil
 }
 
-func UnwindSequencerInterhashsStage(
+func UnwindSequencerInterhashesStage(
 	u *stagedsync.UnwindState,
 	s *stagedsync.StageState,
 	tx kv.RwTx,
 	ctx context.Context,
 	cfg SequencerInterhashesCfg,
 	initialCycle bool,
-) error {
+) (err error) {
+	// TODO [limbo] implement!
+
+	quit := ctx.Done()
+	useExternalTx := tx != nil
+	if !useExternalTx {
+		tx, err = cfg.db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+	}
+
+	syncHeadHeader, err := cfg.blockReader.HeaderByNumber(ctx, tx, u.UnwindPoint)
+	if err != nil {
+		return err
+	}
+	if syncHeadHeader == nil {
+		return fmt.Errorf("header not found for block number %d", u.UnwindPoint)
+	}
+	expectedRootHash := syncHeadHeader.Root
+
+	root, err := unwindZkSMT(s.LogPrefix(), s.BlockNumber, u.UnwindPoint, tx, false, &expectedRootHash, quit)
+	if err != nil {
+		return err
+	}
+	_ = root
+
+	if err := u.Done(tx); err != nil {
+		return err
+	}
+	if !useExternalTx {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
