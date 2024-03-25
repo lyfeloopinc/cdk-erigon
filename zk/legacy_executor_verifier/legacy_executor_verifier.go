@@ -183,7 +183,7 @@ func (v *LegacyExecutorVerifier) handleRequestAsync(ctx context.Context, request
 		return err
 	}
 
-	success, err := execer.Verify(payload, &request.StateRoot)
+	success, err := execer.Verify(payload, request)
 	if err != nil {
 		if errors.Is(err, ErrExecutorUnplannedError) {
 			// only return the error after some more attempts at verifying
@@ -257,7 +257,7 @@ func (v *LegacyExecutorVerifier) handleRequestSync(ctx context.Context, tx kv.Rw
 		return nil, err
 	}
 
-	success, err := execer.Verify(payload, &request.StateRoot)
+	success, err := execer.Verify(payload, request)
 	if err != nil {
 		return nil, err
 	}
@@ -289,6 +289,9 @@ func (v *LegacyExecutorVerifier) buildPayload(ctx context.Context, tx kv.Tx, req
 	if err != nil {
 		return nil, err
 	}
+
+	innerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	witness, err := v.witnessGenerator.GenerateWitness(tx, innerCtx, blocks[0], blocks[len(blocks)-1], false, v.cfg.WitnessFull)
 	if err != nil {

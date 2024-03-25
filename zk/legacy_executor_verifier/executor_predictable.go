@@ -1,7 +1,6 @@
 package legacy_executor_verifier
 
 import (
-	"github.com/ledgerwatch/erigon-lib/common"
 	"sync"
 )
 
@@ -23,7 +22,7 @@ func NewExecutorPredictables(failEvery int) []*ExecutorPredictable {
 	}
 }
 
-func (e *ExecutorPredictable) Verify(p *Payload, erigonStateRoot *common.Hash) (bool, error) {
+func (e *ExecutorPredictable) Verify(p *Payload, request *VerifierRequest) (bool, error) {
 	e.mut.Lock()
 	e.verificationCount++
 	count := e.verificationCount

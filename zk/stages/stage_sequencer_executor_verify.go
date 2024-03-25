@@ -13,6 +13,7 @@ import (
 	"fmt"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon/zk/txpool"
+	"github.com/ledgerwatch/log/v3"
 )
 
 type SequencerExecutorVerifyCfg struct {
