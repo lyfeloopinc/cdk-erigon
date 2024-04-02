@@ -31,6 +31,9 @@ type Zk struct {
 	ExecutorStrictMode          bool
 	AllowFreeTransactions       bool
 	AllowPreEIP155Transactions  bool
+	SequencerYieldSize          uint64
+	SequencerYieldPause         uint64
+	SequencerImmediateSealTime  uint64
 
 	RebuildTreeAfter uint64
 	WitnessFull      bool

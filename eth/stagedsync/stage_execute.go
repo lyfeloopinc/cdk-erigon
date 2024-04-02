@@ -196,12 +196,6 @@ func executeBlock(
 	receipts = execRs.Receipts
 	stateSyncReceipt = execRs.StateSyncReceipt
 
-	// [zkevm] - add in the state root to the receipts.  As we only have one tx per block
-	// for now just add the header root to the receipt
-	for _, r := range receipts {
-		r.PostState = header.Root.Bytes()
-	}
-
 	header.GasUsed = uint64(execRs.GasUsed)
 	header.ReceiptHash = types.DeriveSha(receipts)
 	header.Bloom = execRs.Bloom

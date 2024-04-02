@@ -487,6 +487,21 @@ var (
 		Usage: "Enable/Diable witness full",
 		Value: true,
 	}
+	SequencerYieldSize = cli.Uint64Flag{
+		Name:  "zkevm.sequencer-yield-size",
+		Usage: "Number of transactions to yield from the txpool in each sequencer loop (uint16)",
+		Value: 1,
+	}
+	SequencerYieldPause = cli.Uint64Flag{
+		Name:  "zkevm.sequencer-yield-time",
+		Usage: "Number of microseconds to pause when checking for new transactions in the pool",
+		Value: 50,
+	}
+	SequencerImmediateSealTime = cli.Uint64Flag{
+		Name:  "zkevm.sequencer-immediate-seal-time",
+		Usage: "Number of milliseconds to wait for immediately sealing a block when transactions are available",
+		Value: 100,
+	}
 	RpcBatchConcurrencyFlag = cli.UintFlag{
 		Name:  "rpc.batch.concurrency",
 		Usage: "Does limit amount of goroutines to process 1 batch request. Means 1 bach request can't overload server. 1 batch still can have unlimited amount of request",

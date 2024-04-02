@@ -31,7 +31,6 @@ import (
 	"github.com/ledgerwatch/erigon/ethdb"
 	"github.com/ledgerwatch/erigon/ethdb/olddb"
 	rawdbZk "github.com/ledgerwatch/erigon/zk/rawdb"
-	"github.com/ledgerwatch/erigon/zk/utils"
 )
 
 func SpawnExecuteBlocksStageZk(s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context, cfg ExecuteBlockCfg, initialCycle bool, quiet bool) (err error) {
@@ -52,13 +51,11 @@ func SpawnExecuteBlocksStageZk(s *StageState, u Unwinder, tx kv.RwTx, toBlock ui
 		defer tx.Rollback()
 	}
 
-	shouldShortCircuit, noProgressTo, err := utils.ShouldShortCircuitExecution(tx)
-	if err != nil {
-		return err
-	}
-	if shouldShortCircuit {
-		return nil
-	}
+	// !!!!!! do not merge to zkevm branch !!!!!!!
+	//shouldShortCircuit, noProgressTo, err := utils.ShouldShortCircuitExecution(tx)
+	//if err != nil {
+	//	return err
+	//}
 
 	prevStageProgress, errStart := stages.GetStageProgress(tx, stages.Senders)
 	if errStart != nil {
@@ -105,9 +102,13 @@ func SpawnExecuteBlocksStageZk(s *StageState, u Unwinder, tx kv.RwTx, toBlock ui
 		batch.Rollback()
 	}()
 
-	if s.BlockNumber == 0 {
-		to = noProgressTo
-	}
+	///// !!!!! do not merge to zkevm branch !!!!!!!!
+	//if s.BlockNumber == 0 {
+	//	to = noProgressTo
+	//}
+	//if shouldShortCircuit {
+	//	to = noProgressTo
+	//}
 
 	// limit execution to 100 blocks at a time for faster sync near tip
 	// [TODO] remove it after Interhashes  incremental is optimized

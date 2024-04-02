@@ -60,15 +60,10 @@ const (
 	// stateStreamLimit - don't accumulate state changes if jump is bigger than this amount of blocks
 	stateStreamLimit uint64 = 1_000
 
-	transactionGasLimit = 30000000
-
-	yieldSize = 100 // arbitrary number defining how many transactions to yield from the pool at once
+	transactionGasLimit = 30_000_000
 )
 
 var (
-	// todo: seq: this should be read in from somewhere rather than hard coded!
-	constMiner = common.HexToAddress("0xfa3b44587990f97ba8b6ba7e230a5f0e95d14b3d")
-
 	noop            = state.NewNoopWriter()
 	blockDifficulty = new(big.Int).SetUint64(0)
 )
@@ -221,12 +216,13 @@ func SpawnSequencingStage(
 	newBlockTimestamp := uint64(time.Now().Unix())
 
 	header := &types.Header{
-		ParentHash: parentBlock.Hash(),
-		Coinbase:   constMiner,
-		Difficulty: blockDifficulty,
-		Number:     new(big.Int).SetUint64(nextBlockNum),
-		GasLimit:   getGasLimit(uint16(forkId)),
-		Time:       newBlockTimestamp,
+		ParentHash:      parentBlock.Hash(),
+		Coinbase:        cfg.zk.SequencerAddress,
+		Difficulty:      blockDifficulty,
+		Number:          new(big.Int).SetUint64(nextBlockNum),
+		GasLimit:        getGasLimit(uint16(forkId)),
+		Time:            newBlockTimestamp,
+		WithdrawalsHash: nil,
 	}
 
 	stateReader := state.NewPlainStateReader(tx)
@@ -267,11 +263,17 @@ func SpawnSequencingStage(
 
 	// start waiting for a new transaction to arrive
 	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	// used to keep block sealing at a regular cadence
+	blockImmediateSeal := time.NewTicker(time.Duration(cfg.zk.SequencerImmediateSealTime) * time.Millisecond)
+	defer blockImmediateSeal.Stop()
+
 	log.Info(fmt.Sprintf("[%s] Waiting for txs from the pool...", logPrefix))
 	var addedTransactions []types.Transaction
 	var addedReceipts []*types.Receipt
 	yielded := mapset.NewSet[[32]byte]()
-	lastTxTime := time.Now()
+	lastTransactionCount := 0
 
 	// start to wait for transactions to come in from the pool and attempt to add them to the current batch.  Once we detect a counter
 	// overflow we revert the IBS back to the previous snapshot and don't add the transaction/receipt to the collection that will
@@ -281,6 +283,12 @@ LOOP:
 		select {
 		case <-ticker.C:
 			log.Info(fmt.Sprintf("[%s] Waiting some more for txs from the pool...", logPrefix))
+		case <-blockImmediateSeal.C:
+			// only kill the loop if we have actually processed some transactions otherwise carry on waiting
+			if lastTransactionCount > 0 {
+				log.Info(fmt.Sprintf("[%s] closing block at %v transactions", logPrefix, lastTransactionCount))
+				break LOOP
+			}
 		default:
 			cfg.txPool.LockFlusher()
 			transactions, err := getNextTransactions(cfg, executionAt, forkId, yielded)
@@ -288,6 +296,10 @@ LOOP:
 				return err
 			}
 			cfg.txPool.UnlockFlusher()
+
+			if lastTransactionCount == 0 && len(transactions) > 0 {
+				log.Info(fmt.Sprintf("[%s] found transaction to begin processing...", logPrefix))
+			}
 
 			for _, transaction := range transactions {
 				snap := ibs.Snapshot()
@@ -304,16 +316,7 @@ LOOP:
 
 				addedTransactions = append(addedTransactions, transaction)
 				addedReceipts = append(addedReceipts, receipt)
-			}
-
-			// if there were no transactions in this check, and we have some transactions to process, and we've waited long enough for
-			// more to arrive then close the batch
-			sinceLastTx := time.Now().Sub(lastTxTime)
-			if len(transactions) > 0 {
-				lastTxTime = time.Now()
-			} else if len(addedTransactions) > 0 && sinceLastTx > 250*time.Millisecond {
-				log.Info(fmt.Sprintf("[%s] No new transactions, closing block at %v transactions", logPrefix, len(addedTransactions)))
-				break LOOP
+				lastTransactionCount = len(addedTransactions)
 			}
 		}
 	}
@@ -354,10 +357,13 @@ LOOP:
 }
 
 func getNextTransactions(cfg SequenceBlockCfg, executionAt, forkId uint64, alreadyYielded mapset.Set[[32]byte]) ([]types.Transaction, error) {
+	var (
+		loopSleepTime = time.Duration(cfg.zk.SequencerYieldPause) * time.Microsecond
+		killTime      = 50 * time.Millisecond
+	)
 	var transactions []types.Transaction
-	var err error
-	var count int
-	killer := time.NewTicker(50 * time.Millisecond)
+	killer := time.NewTimer(killTime)
+	defer killer.Stop()
 LOOP:
 	for {
 		// ensure we don't spin forever looking for transactions, attempt for a while then exit up to the caller
@@ -366,31 +372,30 @@ LOOP:
 			break LOOP
 		default:
 		}
-		if err := cfg.txPoolDb.View(context.Background(), func(poolTx kv.Tx) error {
+		err := cfg.txPoolDb.View(context.Background(), func(poolTx kv.Tx) error {
 			slots := types2.TxsRlp{}
-			_, count, err = cfg.txPool.YieldBest(yieldSize, &slots, poolTx, executionAt, getGasLimit(uint16(forkId)), alreadyYielded)
-			if err != nil {
-				return err
+			_, _, inErr := cfg.txPool.YieldBest(uint16(cfg.zk.SequencerYieldSize), &slots, poolTx, executionAt, getGasLimit(uint16(forkId)), alreadyYielded)
+			if inErr != nil {
+				return inErr
 			}
-			if count == 0 {
-				time.Sleep(500 * time.Microsecond)
-				return nil
-			}
-			transactions, err = extractTransactionsFromSlot(slots)
-			if err != nil {
-				return err
+			transactions, inErr = extractTransactionsFromSlot(slots)
+			if inErr != nil {
+				return inErr
 			}
 			return nil
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
 
 		if len(transactions) > 0 {
 			break
+		} else {
+			time.Sleep(loopSleepTime)
 		}
 	}
 
-	return transactions, err
+	return transactions, nil
 }
 
 const (
@@ -594,7 +599,7 @@ func finaliseBlock(
 	}
 
 	finalHeader := finalBlock.Header()
-	finalHeader.Coinbase = constMiner
+	finalHeader.Coinbase = cfg.zk.SequencerAddress
 	finalHeader.GasLimit = getGasLimit(uint16(forkId))
 	finalHeader.ReceiptHash = types.DeriveSha(receipts)
 	newNum := finalBlock.Number()
@@ -744,7 +749,7 @@ func attemptAddTransaction(
 		cfg.chainConfig,
 		core.GetHashFn(header, getHeader),
 		cfg.engine,
-		&constMiner,
+		&cfg.zk.SequencerAddress,
 		gasPool,
 		ibs,
 		noop,

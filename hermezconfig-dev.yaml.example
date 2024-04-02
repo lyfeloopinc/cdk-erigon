@@ -22,7 +22,10 @@ zkevm.datastream-version: 2
 zkevm.data-stream-host: localhost
 zkevm.sequencer-address: "0xfa3b44587990f97ba8b6ba7e230a5f0e95d14b3d"
 zkevm.executor-strict: true
-zkevm.executor-urls: 51.210.116.237:50071
+zkevm.executor-urls: "51.210.116.237:50071"
+zkevm.sequencer-yield-size: 1
+zkevm.sequencer-yield-time: 50
+zkevm.sequencer-immediate-seal-time: 100
 
 externalcl: true
 http.api: [eth, debug, net, trace, web3, erigon, txpool, zkevm]

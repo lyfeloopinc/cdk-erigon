@@ -265,7 +265,7 @@ func ExecuteBlockEphemerallyZk(
 			_, err = blockInfoTree.SetBlockTx(
 				&l2TxHash,
 				txIndex,
-				&localReceipt,
+				receipt,
 				logIndex,
 				*usedGas,
 				effectiveGasPricePercentage,

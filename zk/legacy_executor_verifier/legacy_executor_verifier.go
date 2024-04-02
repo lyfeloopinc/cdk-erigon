@@ -127,14 +127,19 @@ func (v *LegacyExecutorVerifier) StartWork() {
 	}()
 }
 
+func (v *LegacyExecutorVerifier) HasExecutors() bool {
+	return len(v.executors) > 0
+}
+
 func (v *LegacyExecutorVerifier) handleRequest(ctx context.Context, request *VerifierRequest) error {
 	// if we have no executor config then just skip this step and treat everything as OK
+	// and immediately place the response into the responses
 	if len(v.executors) == 0 {
 		response := &VerifierResponse{
 			BatchNumber: request.BatchNumber,
 			Valid:       true,
 		}
-		v.responseChan <- response
+		v.handleResponse(response)
 		return nil
 	}
 
@@ -298,8 +303,4 @@ func (v *LegacyExecutorVerifier) RemoveResponse(batchNumber uint64) {
 		}
 	}
 	v.responses = result
-}
-
-func (v *LegacyExecutorVerifier) HasExecutors() bool {
-	return len(v.executors) > 0
 }

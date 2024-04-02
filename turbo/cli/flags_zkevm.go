@@ -61,6 +61,9 @@ func ApplyFlagsForZkConfig(ctx *cli.Context, cfg *ethconfig.Config) {
 		AllowFreeTransactions:       ctx.Bool(utils.AllowFreeTransactions.Name),
 		AllowPreEIP155Transactions:  ctx.Bool(utils.AllowPreEIP155Transactions.Name),
 		WitnessFull:                 ctx.Bool(utils.WitnessFullFlag.Name),
+		SequencerYieldSize:          ctx.Uint64(utils.SequencerYieldSize.Name),
+		SequencerYieldPause:         ctx.Uint64(utils.SequencerYieldPause.Name),
+		SequencerImmediateSealTime:  ctx.Uint64(utils.SequencerImmediateSealTime.Name),
 	}
 
 	checkFlag(utils.L2ChainIdFlag.Name, cfg.Zk.L2ChainId)
@@ -73,6 +76,9 @@ func ApplyFlagsForZkConfig(ctx *cli.Context, cfg *ethconfig.Config) {
 		checkFlag(utils.SequencerAddressFlag.Name, cfg.Zk.SequencerAddress)
 		checkFlag(utils.ExecutorUrls.Name, cfg.Zk.ExecutorUrls)
 		checkFlag(utils.ExecutorStrictMode.Name, cfg.Zk.ExecutorStrictMode)
+		checkFlag(utils.SequencerYieldPause.Name, cfg.Zk.SequencerYieldPause)
+		checkFlag(utils.SequencerYieldSize.Name, cfg.Zk.SequencerYieldSize)
+		checkFlag(utils.SequencerImmediateSealTime.Name, cfg.Zk.SequencerImmediateSealTime)
 
 		// if we are running in strict mode, the default, and we have no executor URLs then we panic
 		if cfg.Zk.ExecutorStrictMode && (len(cfg.Zk.ExecutorUrls) == 0 || cfg.Zk.ExecutorUrls[0] == "") {
