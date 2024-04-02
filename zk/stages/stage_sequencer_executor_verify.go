@@ -160,42 +160,6 @@ func SpawnSequencerExecutorVerifyStage(
 	return nil
 }
 
-func handleLatestResponses(tx kv.RwTx, verifier *legacy_executor_verifier.LegacyExecutorVerifier, progress uint64) (uint64, error) {
-	// get the latest responses from the verifier then sort them, so we can make sure we're handling verifications
-	// in order
-	responses := verifier.GetAllResponses()
-
-	// sort responses by batch number in ascending order
-	sort.Slice(responses, func(i, j int) bool {
-		return responses[i].BatchNumber < responses[j].BatchNumber
-	})
-
-	for _, response := range responses {
-		// ensure that the first response is the next batch based on the current stage progress
-		// otherwise just return early until we get it
-		if response.BatchNumber != progress+1 {
-			return 0, nil
-		}
-
-		// now check that we are indeed in a good state to continue
-		if !response.Valid {
-			// now we need to rollback and handle the error
-			// todo [zkevm] limbo mode engage!
-		}
-
-		// all good so just update the stage progress for now
-		if err := stages.SaveStageProgress(tx, stages.SequenceExecutorVerify, response.BatchNumber); err != nil {
-			return 0, err
-		}
-
-		// now let the verifier know we have got this message, so it can release it
-		verifier.RemoveResponse(response.BatchNumber)
-		progress = response.BatchNumber
-	}
-
-	return progress, nil
-}
-
 func UnwindSequencerExecutorVerifyStage(
 	u *stagedsync.UnwindState,
 	s *stagedsync.StageState,
