@@ -108,6 +108,10 @@ func (api *APIImpl) ProtocolVersion(ctx context.Context) (hexutil.Uint, error) {
 
 // GasPrice implements eth_gasPrice. Returns the current price per gas in wei.
 func (api *APIImpl) GasPrice(ctx context.Context) (*hexutil.Big, error) {
+	// temporary solution to gasless network
+	var price hexutil.Big
+	return &price, nil
+
 	tx, err := api.db.BeginRo(ctx)
 	if err != nil {
 		return nil, err
