@@ -199,7 +199,7 @@ func CatchupDatastream(logPrefix string, tx kv.RwTx, stream *datastreamer.Stream
 			index++
 		}
 
-		// basically commit onece 80% of the entries array is filled
+		// basically commit once 80% of the entries array is filled
 		if index+1 >= insertEntryCount*4/5 {
 			log.Info(fmt.Sprintf("[%s] Commit count reached, committing entries", logPrefix), "block", currentBlockNumber)
 			if err = srv.CommitEntriesToStream(entries[:index], true); err != nil {
@@ -267,6 +267,26 @@ func writeGenesisToStream(
 	}
 
 	err = stream.CommitAtomicOp()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func UnwindStageDataStreamCatchup(u *stagedsync.UnwindState, s *stagedsync.StageState, ctx context.Context, tx kv.RwTx, cfg DataStreamCatchupCfg) error {
+	log.Info(fmt.Sprintf("[%s] Unwinding StageDataStreamCatchup (full truncation of file)", s.LogPrefix()), "block", u.UnwindPoint)
+
+	// truncate the file to force regeneration
+	if cfg.stream != nil {
+		err := cfg.stream.TruncateFile(0)
+		if err != nil {
+			return err
+		}
+	}
+
+	// stage state
+	err := stages.SaveStageProgress(tx, stages.DataStream, 0)
 	if err != nil {
 		return err
 	}

@@ -61,9 +61,11 @@ type L1Syncer struct {
 	// Channels
 	logsChan            chan ethTypes.Log
 	progressMessageChan chan string
+
+	ctx context.Context
 }
 
-func NewL1Syncer(em IEtherman, l1ContractAddresses []common.Address, topics [][]common.Hash, blockRange, queryDelay uint64) *L1Syncer {
+func NewL1Syncer(em IEtherman, l1ContractAddresses []common.Address, topics [][]common.Hash, blockRange, queryDelay uint64, ctx context.Context) *L1Syncer {
 
 	return &L1Syncer{
 		em:                  em,
@@ -73,6 +75,7 @@ func NewL1Syncer(em IEtherman, l1ContractAddresses []common.Address, topics [][]
 		queryDelay:          queryDelay,
 		progressMessageChan: make(chan string),
 		logsChan:            make(chan ethTypes.Log),
+		ctx:                 ctx,
 	}
 }
 
@@ -98,7 +101,7 @@ func (s *L1Syncer) GetProgressMessageChan() chan string {
 }
 
 func (s *L1Syncer) Run(lastCheckedBlock uint64) {
-	//if already started, don't start another thread
+	// if already started, don't start another thread
 	if s.isSyncStarted.Load() {
 		return
 	}
@@ -107,7 +110,7 @@ func (s *L1Syncer) Run(lastCheckedBlock uint64) {
 	s.isDownloading.Store(true)
 	s.lastCheckedL1Block.Store(lastCheckedBlock)
 
-	//start a thread to cheack for new l1 block in interval
+	// start a thread to cheack for new l1 block in interval
 	go func() {
 		s.isSyncStarted.Store(true)
 		defer s.isSyncStarted.Store(false)
@@ -116,22 +119,28 @@ func (s *L1Syncer) Run(lastCheckedBlock uint64) {
 		defer log.Info("Stopping L1 syncer thread")
 
 		for {
-			latestL1Block, err := s.getLatestL1Block()
-			if err != nil {
-				log.Error("Error getting latest L1 block", "err", err)
-			} else {
-				if latestL1Block > s.lastCheckedL1Block.Load() {
-					s.isDownloading.Store(true)
-					if err := s.queryBlocks(); err != nil {
-						log.Error("Error querying blocks", "err", err)
-					} else {
-						s.lastCheckedL1Block.Store(latestL1Block)
+			select {
+			case <-s.ctx.Done():
+				return
+			default:
+				latestL1Block, err := s.getLatestL1Block()
+				if err != nil {
+					log.Error("Error getting latest L1 block", "err", err)
+				} else {
+					if latestL1Block > s.lastCheckedL1Block.Load() {
+						s.isDownloading.Store(true)
+						if err := s.queryBlocks(); err != nil {
+							log.Error("Error querying blocks", "err", err)
+						} else {
+							s.lastCheckedL1Block.Store(latestL1Block)
+						}
 					}
 				}
+
+				s.isDownloading.Store(false)
+				time.Sleep(time.Duration(s.queryDelay) * time.Millisecond)
 			}
 
-			s.isDownloading.Store(false)
-			time.Sleep(time.Duration(s.queryDelay) * time.Millisecond)
 		}
 	}()
 }

@@ -2,6 +2,7 @@ package stages
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
@@ -179,7 +180,20 @@ func UnwindSequencerExecutorVerifyStage(
 	cfg SequencerExecutorVerifyCfg,
 	initialCycle bool,
 ) error {
-	return nil
+	hermezDb := hermez_db.NewHermezDb(tx)
+	batchNo, err := hermezDb.GetBatchNoByL2Block(u.UnwindPoint)
+	if err != nil {
+		return err
+	}
+	log.Debug(fmt.Sprintf("[%s] Unwinding sequencer executor verify", s.LogPrefix()), "batch", batchNo)
+
+	// safest to delete witnesses completely
+	err = hermezDb.TruncateWitnesses()
+	if err != nil {
+		return err
+	}
+
+	return stages.SaveStageProgress(tx, stages.SequenceExecutorVerify, batchNo)
 }
 
 func PruneSequencerExecutorVerifyStage(

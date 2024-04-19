@@ -136,10 +136,25 @@ LOOP:
 	return nil
 }
 
-func UnwindSequencerL1BlockSyncStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg SequencerL1BlockSyncCfg, ctx context.Context) (err error) {
+func UnwindSequencerL1BlockSyncStage(u *stagedsync.UnwindState, s *stagedsync.StageState, tx kv.RwTx, cfg SequencerL1BlockSyncCfg, ctx context.Context) (err error) {
+	log.Info(fmt.Sprintf("[%s] Unwinding sequencer L1 block sync stage", s.LogPrefix()))
+
+	// remove all L1 batch data
+	hermezDb := hermez_db.NewHermezDb(tx)
+	err = hermezDb.TruncateL1BatchData()
+	if err != nil {
+		return err
+	}
+
+	// stage state - revert to config setting for L1 sync start block
+	if err = stages.SaveStageProgress(tx, stages.L1BlockSync, cfg.zkCfg.L1SyncStartBlock); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func PruneSequencerL1BlockSyncStage(s *stagedsync.PruneState, tx kv.RwTx, cfg SequencerL1BlockSyncCfg, ctx context.Context) error {
+	log.Warn(fmt.Sprintf("[%s] Pruning sequencer interhashes (not implemented)", s.LogPrefix()))
 	return nil
 }

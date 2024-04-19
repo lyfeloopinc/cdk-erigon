@@ -65,7 +65,7 @@ func SequencerZkStages(
 				return SpawnSequencerL1BlockSyncStage(s, unwinder, ctx, tx, sequencerL1BlockSyncCfg, firstCycle, quiet)
 			},
 			Unwind: func(firstCycle bool, u *stages.UnwindState, s *stages.StageState, tx kv.RwTx) error {
-				return UnwindSequencerL1BlockSyncStage(u, tx, sequencerL1BlockSyncCfg, ctx)
+				return UnwindSequencerL1BlockSyncStage(u, s, tx, sequencerL1BlockSyncCfg, ctx)
 			},
 			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
 				return PruneSequencerL1BlockSyncStage(p, tx, sequencerL1BlockSyncCfg, ctx)
@@ -114,7 +114,7 @@ func SequencerZkStages(
 				return SpawnSequencerInterhashesStage(s, u, tx, ctx, sequencerInterhashesCfg, firstCycle, quiet)
 			},
 			Unwind: func(firstCycle bool, u *stages.UnwindState, s *stages.StageState, tx kv.RwTx) error {
-				return UnwindSequencerInterhashsStage(u, s, tx, ctx, sequencerInterhashesCfg, firstCycle)
+				return UnwindSequencerInterhashesStage(u, s, tx, ctx, sequencerInterhashesCfg, firstCycle)
 			},
 			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
 				return PruneSequencerInterhashesStage(p, tx, sequencerInterhashesCfg, ctx, firstCycle)
@@ -228,7 +228,7 @@ func SequencerZkStages(
 				return SpawnStageDataStreamCatchup(s, ctx, tx, dataStreamCatchupCfg)
 			},
 			Unwind: func(firstCycle bool, u *stages.UnwindState, s *stages.StageState, tx kv.RwTx) error {
-				return nil
+				return UnwindStageDataStreamCatchup(u, s, ctx, tx, dataStreamCatchupCfg)
 			},
 			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
 				return nil
@@ -500,6 +500,9 @@ var AllStagesZk = []stages2.SyncStage{
 var ZkSequencerUnwindOrder = stages.UnwindOrder{
 	stages2.IntermediateHashes, // need to unwind SMT before we remove history
 	stages2.Execution,
+	stages2.L1Syncer,
+	stages2.L1BlockSync,
+	stages2.DataStream,
 	stages2.HashState,
 	stages2.CallTraces,
 	stages2.AccountHistoryIndex,
@@ -511,6 +514,7 @@ var ZkSequencerUnwindOrder = stages.UnwindOrder{
 
 var ZkUnwindOrder = stages.UnwindOrder{
 	stages2.L1Syncer,
+	stages2.DataStream,
 	stages2.Batches,
 	stages2.BlockHashes,
 	stages2.IntermediateHashes, // need to unwind SMT before we remove history

@@ -6,10 +6,11 @@ import (
 	"github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 
+	"encoding/json"
+
 	dstypes "github.com/ledgerwatch/erigon/zk/datastream/types"
 	"github.com/ledgerwatch/erigon/zk/types"
 	"github.com/ledgerwatch/log/v3"
-	"encoding/json"
 )
 
 const L1VERIFICATIONS = "hermez_l1Verifications"                       // l1blockno, batchno -> l1txhash
@@ -981,6 +982,10 @@ func (db *HermezDb) WriteWitness(batchNumber uint64, witness []byte) error {
 	return db.tx.Put(BATCH_WITNESSES, Uint64ToBytes(batchNumber), witness)
 }
 
+func (db *HermezDb) TruncateWitnesses() error {
+	return db.tx.ClearBucket(BATCH_WITNESSES)
+}
+
 func (db *HermezDbReader) GetWitness(batchNumber uint64) ([]byte, error) {
 	v, err := db.tx.GetOne(BATCH_WITNESSES, Uint64ToBytes(batchNumber))
 	if err != nil {
@@ -1017,6 +1022,10 @@ func (db *HermezDbReader) GetBatchCounters(batchNumber uint64) (map[string]int, 
 func (db *HermezDb) WriteL1BatchData(batchNumber uint64, data []byte) error {
 	k := Uint64ToBytes(batchNumber)
 	return db.tx.Put(L1_BATCH_DATA, k, data)
+}
+
+func (db *HermezDb) TruncateL1BatchData() error {
+	return db.tx.ClearBucket(L1_BATCH_DATA)
 }
 
 // GetL1BatchData returns the data stored for a given L1 batch number

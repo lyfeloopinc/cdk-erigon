@@ -2,10 +2,14 @@ package stages
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
+	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/eth/stagedsync"
+	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
 	"github.com/ledgerwatch/erigon/turbo/shards"
+	"github.com/ledgerwatch/log/v3"
 )
 
 type SequencerInterhashesCfg struct {
@@ -61,7 +65,7 @@ func SpawnSequencerInterhashesStage(
 	return nil
 }
 
-func UnwindSequencerInterhashsStage(
+func UnwindSequencerInterhashesStage(
 	u *stagedsync.UnwindState,
 	s *stagedsync.StageState,
 	tx kv.RwTx,
@@ -69,6 +73,32 @@ func UnwindSequencerInterhashsStage(
 	cfg SequencerInterhashesCfg,
 	initialCycle bool,
 ) error {
+	log.Info(fmt.Sprintf("[%s] Unwinding sequencer interhashes", s.LogPrefix()), "block", u.UnwindPoint)
+
+	from, err := stages.GetStageProgress(tx, stages.IntermediateHashes)
+	if err != nil {
+		return err
+	}
+
+	toBlock, err := rawdb.ReadBlockByNumber(tx, u.UnwindPoint)
+	if err != nil {
+		return err
+	}
+	expectedHash := toBlock.Hash()
+
+	// SMT
+	_, err = unwindZkSMT(s.LogPrefix(), from, u.UnwindPoint, tx, true, &expectedHash, ctx.Done())
+	if err != nil {
+		return err
+
+	}
+
+	// Stage state
+	if err := stages.SaveStageProgress(tx, stages.IntermediateHashes, u.UnwindPoint); err != nil {
+		return err
+
+	}
+
 	return nil
 }
 
@@ -79,5 +109,6 @@ func PruneSequencerInterhashesStage(
 	ctx context.Context,
 	initialCycle bool,
 ) error {
+	log.Warn("Pruning SequencerInterhashes not implemented")
 	return nil
 }

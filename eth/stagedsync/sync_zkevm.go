@@ -21,7 +21,7 @@ func (s *Sync) UnwindToBatch(unwindPoint uint64, tx kv.RwTx) error {
 		return fmt.Errorf("no batch found at block %d", unwindPoint)
 	}
 
-	log.Info("UnwindToBatch", "batchNo", unwindPoint, "blockNo", unwindPointBlock)
+	log.Info("Unwinding Node", "batchNo", unwindPoint, "blockNo", unwindPointBlock)
 	s.unwindPoint = &unwindPointBlock
 	return nil
 }

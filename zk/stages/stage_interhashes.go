@@ -204,11 +204,8 @@ func UnwindZkIntermediateHashesStage(u *stagedsync.UnwindState, s *stagedsync.St
 
 	var expectedRootHash common.Hash
 	syncHeadHeader := rawdb.ReadHeaderByNumber(tx, u.UnwindPoint)
-	if err != nil {
-		return err
-	}
 	if syncHeadHeader == nil {
-		log.Warn("header not found for block number", "block", u.UnwindPoint)
+		return fmt.Errorf("header not found for block number %d", u.UnwindPoint)
 	} else {
 		expectedRootHash = syncHeadHeader.Root
 	}
