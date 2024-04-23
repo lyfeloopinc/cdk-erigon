@@ -300,6 +300,8 @@ LOOP:
 			if err != nil {
 				return fmt.Errorf("l2blocks download routine error: %v", err)
 			}
+		case <-ctx.Done():
+			return fmt.Errorf("[%s] Context done", logPrefix)
 		default:
 			// wait at least one block to be written, before continuing
 			// or if stage_exec is ahead - don't wait here, but rather continue so exec catches up
