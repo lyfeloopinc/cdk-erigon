@@ -49,12 +49,24 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 	if parentHeader != nil {
 		excessDataGas = parentHeader.ExcessDataGas
 	}
-	BlockContext := core.NewEVMBlockContext(header, core.GetHashFn(header, getHeader), engine, nil, excessDataGas)
+	// BlockContext := core.NewEVMBlockContext(header, core.GetHashFn(header, getHeader), engine, nil, excessDataGas)
+	hermezReader := hermez_db.NewHermezDbReader(dbtx)
 
+	zkConfig := vm.NewZkConfig(vm.Config{}, nil)
+	// Add addresses to access list if applicable
+	// about the transaction and calling mechanisms.
+	zkConfig.Config.SkipAnalysis = core.SkipAnalysis(cfg, block.NumberU64())
+
+	blockContext, _, excessDataGas, err := core.PrepareBlockTxExecution(cfg, &vm.Config{}, core.GetHashFn(header, getHeader), nil, engine.(consensus.Engine), stagedsync.NewChainReaderImpl(cfg, dbtx, nil), block, statedb, hermezReader, block.GasLimit())
+	if err != nil {
+		return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
+	}
+
+	vmenv := vm.NewZkEVM(*blockContext, evmtypes.TxContext{}, statedb, cfg, zkConfig)
 	// Recompute transactions up to the target index.
 	signer := types.MakeSigner(cfg, block.NumberU64())
 	if historyV3 {
-		rules := cfg.Rules(BlockContext.BlockNumber, BlockContext.Time)
+		rules := cfg.Rules(blockContext.BlockNumber, blockContext.Time)
 		txn := block.Transactions()[txIndex]
 		statedb.Prepare(txn.Hash(), block.Hash(), txIndex)
 		msg, _ := txn.AsMessage(*signer, block.BaseFee(), rules)
@@ -66,15 +78,7 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 		}
 
 		TxContext := core.NewEVMTxContext(msg)
-		return msg, BlockContext, TxContext, statedb, reader, nil
-	}
-	vmenv := vm.NewEVM(BlockContext, evmtypes.TxContext{}, statedb, cfg, vm.Config{})
-
-	hermezReader := hermez_db.NewHermezDbReader(dbtx)
-
-	_, excessDataGas, err = core.PrepareBlockTxExecution(cfg, engine.(consensus.Engine), stagedsync.NewChainReaderImpl(cfg, dbtx, nil), block, statedb, hermezReader, block.GasLimit(), false)
-	if err != nil {
-		return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
+		return msg, *blockContext, TxContext, statedb, reader, nil
 	}
 
 	rules := vmenv.ChainRules()
@@ -84,12 +88,18 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 		case <-ctx.Done():
 			return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, ctx.Err()
 		}
+
 		statedb.Prepare(txn.Hash(), block.Hash(), idx)
-
 		// Assemble the transaction call message and return if the requested offset
-		msg, _ := txn.AsMessage(*signer, block.BaseFee(), rules)
+		effectiveGasPricePercentage, err := hermezReader.GetEffectiveGasPricePercentage(txn.Hash())
+		if err != nil {
+			return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
+		}
 
-		effectiveGasPricePercentage, _ := hermezReader.GetEffectiveGasPricePercentage(txn.Hash())
+		msg, err := txn.AsMessage(*signer, block.BaseFee(), rules)
+		if err != nil {
+			return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
+		}
 		msg.SetEffectiveGasPricePercentage(effectiveGasPricePercentage)
 
 		if msg.FeeCap().IsZero() && engine != nil {
@@ -101,7 +111,7 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 
 		TxContext := core.NewEVMTxContext(msg)
 		if idx == txIndex {
-			return msg, BlockContext, TxContext, statedb, reader, nil
+			return msg, vmenv.Context(), TxContext, statedb, reader, nil
 		}
 		vmenv.Reset(TxContext, statedb)
 		// Not yet the searched for transaction, execute on top of the current state
@@ -114,7 +124,7 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 
 		if idx+1 == len(block.Transactions()) {
 			// Return the state from evaluating all txs in the block, note no msg or TxContext in this case
-			return nil, BlockContext, evmtypes.TxContext{}, statedb, reader, nil
+			return nil, vmenv.Context(), evmtypes.TxContext{}, statedb, reader, nil
 		}
 	}
 	return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, fmt.Errorf("transaction index %d out of range for block %x", txIndex, block.Hash())

@@ -202,6 +202,7 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 		Difficulty: big.NewInt(0),
 	}
 	getHeader := func(hash common.Hash, number uint64) *types.Header { return rawdb.ReadHeader(tx, hash, number) }
+	blockHashFunc := core.GetHashFn(header, getHeader)
 
 	chainConfig := params.ChainConfigByChainName("hermez-dev")
 	chainConfig.ChainID = big.NewInt(test.ChainId)
@@ -272,6 +273,10 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 	blockStarted := false
 	for i, block := range decodedBlocks {
 		for _, transaction := range block.Transactions {
+			vmCfg.Config.SkipAnalysis = core.SkipAnalysis(chainConfig, header.Number.Uint64())
+
+			blockContext := core.NewEVMBlockContext(header, blockHashFunc, engine, &sequencer, big.NewInt(0))
+
 			if !blockStarted {
 				overflow, err := batchCollector.StartNewBlock()
 				if err != nil {
@@ -294,9 +299,8 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 
 			_, result, err := core.ApplyTransaction_zkevm(
 				chainConfig,
-				core.GetHashFn(header, getHeader),
+				&blockContext,
 				engine,
-				&sequencer,
 				gasPool,
 				ibs,
 				noop,
@@ -304,8 +308,8 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 				transaction,
 				&header.GasUsed,
 				vmCfg,
-				big.NewInt(0), // parent excess data gas
-				zktypes.EFFECTIVE_GAS_PRICE_PERCENTAGE_MAXIMUM)
+				zktypes.EFFECTIVE_GAS_PRICE_PERCENTAGE_MAXIMUM,
+			)
 
 			if err != nil {
 				// this could be deliberate in the test so just move on and note it

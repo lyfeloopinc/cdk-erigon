@@ -36,6 +36,7 @@ import (
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/core/types/accounts"
 	"github.com/ledgerwatch/erigon/core/vm"
+	"github.com/ledgerwatch/erigon/core/vm/evmtypes"
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
 	"github.com/ledgerwatch/erigon/eth/stagedsync"
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
@@ -48,11 +49,11 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/shards"
 	"github.com/ledgerwatch/erigon/zk/erigon_db"
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
+	zktx "github.com/ledgerwatch/erigon/zk/tx"
 	"github.com/ledgerwatch/erigon/zk/txpool"
 	zktypes "github.com/ledgerwatch/erigon/zk/types"
 	"github.com/ledgerwatch/erigon/zk/utils"
 	"github.com/ledgerwatch/secp256k1"
-	zktx "github.com/ledgerwatch/erigon/zk/tx"
 )
 
 const (
@@ -248,10 +249,16 @@ func SpawnSequencingStage(
 	eridb := db2.NewEriDb(tx)
 	smt := smt.NewSMT(eridb)
 
+	getHeader := func(hash common.Hash, number uint64) *types.Header { return rawdb.ReadHeader(tx, hash, number) }
+	blockHashFunc := core.GetHashFn(header, getHeader)
+	cfg.zkVmConfig.Config.SkipAnalysis = core.SkipAnalysis(cfg.chainConfig, header.Number.Uint64())
+
+	blockContext := core.NewEVMBlockContext(header, blockHashFunc, cfg.engine, &cfg.zk.AddressSequencer, parentBlock.ExcessDataGas())
+
 	// here we have a special case and need to inject in the initial batch on the network before
 	// we can continue accepting transactions from the pool
 	if executionAt == 0 {
-		err = processInjectedInitialBatch(hermezDb, ibs, tx, cfg, header, parentBlock, stateReader, forkId, smt)
+		err = processInjectedInitialBatch(hermezDb, ibs, &blockContext, tx, cfg, header, parentBlock, stateReader, forkId, smt)
 		if err != nil {
 			return err
 		}
@@ -353,7 +360,7 @@ LOOP:
 					effectiveGas = DeriveEffectiveGasPrice(cfg, transaction)
 				}
 
-				receipt, overflow, err = attemptAddTransaction(tx, cfg, batchCounters, header, parentBlock.Header(), transaction, ibs, hermezDb, smt, effectiveGas)
+				receipt, overflow, err = attemptAddTransaction(tx, cfg, batchCounters, &blockContext, header, parentBlock.Header(), transaction, ibs, hermezDb, smt, effectiveGas)
 				if err != nil {
 					return err
 				}
@@ -409,7 +416,7 @@ LOOP:
 
 		for idx, transaction := range addedTransactions {
 			effectiveGas := DeriveEffectiveGasPrice(cfg, transaction)
-			receipt, innerOverflow, err := attemptAddTransaction(tx, cfg, batchCounters, header, parentBlock.Header(), transaction, ibs, hermezDb, smt, effectiveGas)
+			receipt, innerOverflow, err := attemptAddTransaction(tx, cfg, batchCounters, &blockContext, header, parentBlock.Header(), transaction, ibs, hermezDb, smt, effectiveGas)
 			if err != nil {
 				return err
 			}
@@ -548,6 +555,7 @@ const (
 func processInjectedInitialBatch(
 	hermezDb *hermez_db.HermezDb,
 	ibs *state.IntraBlockState,
+	blockContext *evmtypes.BlockContext,
 	tx kv.RwTx,
 	cfg SequenceBlockCfg,
 	header *types.Header,
@@ -574,7 +582,7 @@ func processInjectedInitialBatch(
 		return err
 	}
 
-	txn, receipt, err := handleInjectedBatch(cfg, tx, ibs, hermezDb, injected, header, parentBlock, forkId, smt)
+	txn, receipt, err := handleInjectedBatch(cfg, tx, blockContext, ibs, hermezDb, injected, header, parentBlock, forkId, smt)
 	if err != nil {
 		return err
 	}
@@ -663,6 +671,7 @@ func postBlockStateHandling(
 func handleInjectedBatch(
 	cfg SequenceBlockCfg,
 	dbTx kv.RwTx,
+	blockContext *evmtypes.BlockContext,
 	ibs *state.IntraBlockState,
 	hermezDb *hermez_db.HermezDb,
 	injected *zktypes.L1InjectedBatch,
@@ -686,7 +695,7 @@ func handleInjectedBatch(
 
 	// process the tx and we can ignore the counters as an overflow at this stage means no network anyway
 	effectiveGas := DeriveEffectiveGasPrice(cfg, decodedBlocks[0].Transactions[0])
-	receipt, _, err := attemptAddTransaction(dbTx, cfg, batchCounters, header, parentBlock.Header(), decodedBlocks[0].Transactions[0], ibs, hermezDb, smt, effectiveGas)
+	receipt, _, err := attemptAddTransaction(dbTx, cfg, batchCounters, blockContext, header, parentBlock.Header(), decodedBlocks[0].Transactions[0], ibs, hermezDb, smt, effectiveGas)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -870,6 +879,7 @@ func attemptAddTransaction(
 	tx kv.RwTx,
 	cfg SequenceBlockCfg,
 	batchCounters *vm.BatchCounterCollector,
+	blockContext *evmtypes.BlockContext,
 	header *types.Header,
 	parentHeader *types.Header,
 	transaction types.Transaction,
@@ -888,7 +898,6 @@ func attemptAddTransaction(
 	}
 
 	gasPool := new(core.GasPool).AddGas(transactionGasLimit)
-	getHeader := func(hash common.Hash, number uint64) *types.Header { return rawdb.ReadHeader(tx, hash, number) }
 
 	// set the counter collector on the config so that we can gather info during the execution
 	cfg.zkVmConfig.CounterCollector = txCounters.ExecutionCounters()
@@ -899,9 +908,8 @@ func attemptAddTransaction(
 
 	receipt, execResult, err := core.ApplyTransaction_zkevm(
 		cfg.chainConfig,
-		core.GetHashFn(header, getHeader),
+		blockContext,
 		cfg.engine,
-		&cfg.zk.AddressSequencer,
 		gasPool,
 		ibs,
 		noop,
@@ -909,7 +917,6 @@ func attemptAddTransaction(
 		transaction,
 		&header.GasUsed,
 		*cfg.zkVmConfig,
-		parentHeader.ExcessDataGas,
 		effectiveGasPrice)
 
 	if err != nil {

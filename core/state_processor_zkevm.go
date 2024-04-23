@@ -17,8 +17,6 @@
 package core
 
 import (
-	"math/big"
-
 	libcommon "github.com/gateway-fm/cdk-erigon-lib/common"
 
 	"github.com/ledgerwatch/erigon/chain"
@@ -121,9 +119,8 @@ func applyTransaction_zkevm(config *chain.Config, engine consensus.EngineReader,
 // indicating the block was invalid.
 func ApplyTransaction_zkevm(
 	config *chain.Config,
-	blockHashFunc func(n uint64) libcommon.Hash,
+	blockContext *evmtypes.BlockContext,
 	engine consensus.EngineReader,
-	author *libcommon.Address,
 	gp *GasPool,
 	ibs *state.IntraBlockState,
 	stateWriter state.StateWriter,
@@ -131,17 +128,10 @@ func ApplyTransaction_zkevm(
 	tx types.Transaction,
 	usedGas *uint64,
 	cfg vm.ZkConfig,
-	excessDataGas *big.Int,
 	effectiveGasPricePercentage uint8,
 ) (*types.Receipt, *ExecutionResult, error) {
 	// Create a new context to be used in the EVM environment
+	evm := vm.NewZkEVM(*blockContext, evmtypes.TxContext{}, ibs, config, cfg)
 
-	// Add addresses to access list if applicable
-	// about the transaction and calling mechanisms.
-	cfg.Config.SkipAnalysis = SkipAnalysis(config, header.Number.Uint64())
-
-	blockContext := NewEVMBlockContext(header, blockHashFunc, engine, author, excessDataGas)
-	vmenv := vm.NewZkEVM(blockContext, evmtypes.TxContext{}, ibs, config, cfg)
-
-	return applyTransaction_zkevm(config, engine, gp, ibs, stateWriter, header, tx, usedGas, vmenv, cfg.Config, effectiveGasPricePercentage)
+	return applyTransaction_zkevm(config, engine, gp, ibs, stateWriter, header, tx, usedGas, evm, cfg.Config, effectiveGasPricePercentage)
 }
