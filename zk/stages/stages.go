@@ -7,6 +7,7 @@ import (
 
 	stages "github.com/ledgerwatch/erigon/eth/stagedsync"
 	stages2 "github.com/ledgerwatch/erigon/eth/stagedsync/stages"
+	"github.com/ledgerwatch/log/v3"
 )
 
 func SequencerZkStages(
@@ -88,7 +89,8 @@ func SequencerZkStages(
 				return UnwindSequenceExecutionStage(u, s, tx, ctx, exec, firstCycle)
 			},
 			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
-				return PruneSequenceExecutionStage(p, tx, exec, ctx, firstCycle)
+				log.Warn("Prune not implemented for Execution stage")
+				return nil
 			},
 		},
 		{
@@ -529,11 +531,11 @@ var ZkSequencerUnwindOrder = stages.UnwindOrder{
 }
 
 var ZkUnwindOrder = stages.UnwindOrder{
+	stages2.IntermediateHashes, // need to unwind SMT before we remove history
 	stages2.L1Syncer,
 	stages2.DataStream,
 	stages2.Batches,
 	stages2.BlockHashes,
-	stages2.IntermediateHashes, // need to unwind SMT before we remove history
 	stages2.Execution,
 	stages2.CumulativeIndex,
 	stages2.HashState,
