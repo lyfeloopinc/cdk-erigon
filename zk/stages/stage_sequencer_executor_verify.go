@@ -179,13 +179,22 @@ func UnwindSequencerExecutorVerifyStage(
 	ctx context.Context,
 	cfg SequencerExecutorVerifyCfg,
 	initialCycle bool,
-) error {
+) (err error) {
+	useExternalTx := tx != nil
+	if !useExternalTx {
+		tx, err = cfg.db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+	}
+
 	hermezDb := hermez_db.NewHermezDb(tx)
 	batchNo, err := hermezDb.GetBatchNoByL2Block(u.UnwindPoint)
 	if err != nil {
 		return err
 	}
-	log.Debug(fmt.Sprintf("[%s] Unwinding sequencer executor verify", s.LogPrefix()), "batch", batchNo)
+	log.Info(fmt.Sprintf("[%s] Unwinding sequencer executor verify", s.LogPrefix()), "batch", batchNo)
 
 	// safest to delete witnesses completely
 	err = hermezDb.TruncateWitnesses()
@@ -193,7 +202,17 @@ func UnwindSequencerExecutorVerifyStage(
 		return err
 	}
 
-	return stages.SaveStageProgress(tx, stages.SequenceExecutorVerify, batchNo)
+	if err = u.Done(tx); err != nil {
+		return fmt.Errorf(" reset: %w", err)
+	}
+
+	if !useExternalTx {
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("failed to write db commit: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func PruneSequencerExecutorVerifyStage(

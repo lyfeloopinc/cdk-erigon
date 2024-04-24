@@ -223,7 +223,50 @@ func HandleInitialSequenceBatches(
 	return nil
 }
 
-func UnwindL1SequencerSyncStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg L1SequencerSyncCfg, ctx context.Context) error {
+func UnwindL1SequencerSyncStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg L1SequencerSyncCfg, ctx context.Context) (err error) {
+	useExternalTx := tx != nil
+	if !useExternalTx {
+		tx, err = cfg.db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+	}
+	log.Info(fmt.Sprintf("[%s] Unwinding L1 sequencer sync", u.LogPrefix()), "to", u.UnwindPoint)
+
+	err = tx.ClearBucket(hermez_db.L1SEQUENCES)
+	if err != nil {
+		return err
+	}
+	err = tx.ClearBucket(hermez_db.L1VERIFICATIONS)
+	if err != nil {
+		return err
+	}
+
+	if err := stages.SaveStageProgress(tx, stages.L1VerificationsBatchNo, 0); err != nil {
+		return fmt.Errorf("failed to save stage progress, %w", err)
+	}
+	if err := stages.SaveStageProgress(tx, stages.L1Syncer, 0); err != nil {
+		return fmt.Errorf("failed to save stage progress, %w", err)
+	}
+	if err = stages.SaveStageProgress(tx, stages.L1InfoTree, 0); err != nil {
+		return err
+	}
+	if err := stages.SaveStageProgress(tx, stages.VerificationsStateRootCheck, 0); err != nil {
+		return fmt.Errorf("failed to save stage progress, %w", err)
+	}
+
+	// we should not call the below as it will update the syncer to the current progress
+	//if err = u.Done(tx); err != nil {
+	//	return fmt.Errorf(" reset: %w", err)
+	//}
+
+	if !useExternalTx {
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("failed to write db commit: %w", err)
+		}
+	}
+
 	return nil
 }
 

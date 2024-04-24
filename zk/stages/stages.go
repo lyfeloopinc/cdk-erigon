@@ -12,6 +12,7 @@ import (
 func SequencerZkStages(
 	ctx context.Context,
 	cumulativeIndex stages.CumulativeIndexCfg,
+	blockHashCfg stages.BlockHashesCfg,
 	l1InfoTreeCfg L1SequencerSyncCfg,
 	sequencerL1BlockSyncCfg SequencerL1BlockSyncCfg,
 	dataStreamCatchupCfg DataStreamCatchupCfg,
@@ -28,23 +29,6 @@ func SequencerZkStages(
 	test bool,
 ) []*stages.Stage {
 	return []*stages.Stage{
-		/*
-			TODO: doesn't work since we don't have headers yet at this stage; should be moved until after execution
-
-			{
-				ID:          stages.CumulativeIndex,
-				Description: "Write Cumulative Index",
-				Forward: func(firstCycle bool, badBlockUnwind bool, s *stages.StageState, u stages.Unwinder, tx kv.RwTx, quiet bool) error {
-					return stages.SpawnStageCumulativeIndex(cumulativeIndex, s, tx, ctx)
-				},
-				Unwind: func(firstCycle bool, u *stages.UnwindState, s *stages.StageState, tx kv.RwTx) error {
-					return stages.UnwindCumulativeIndexStage(u, cumulativeIndex, tx, ctx)
-				},
-				Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
-					return stages.PruneCumulativeIndexStage(p, tx, ctx)
-				},
-			},
-		*/
 		{
 			ID:          stages2.L1Syncer,
 			Description: "L1 Sequencer Sync Updates",
@@ -105,6 +89,32 @@ func SequencerZkStages(
 			},
 			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
 				return PruneSequenceExecutionStage(p, tx, exec, ctx, firstCycle)
+			},
+		},
+		{
+			ID:          stages2.BlockHashes,
+			Description: "Write block hashes",
+			Forward: func(firstCycle bool, badBlockUnwind bool, s *stages.StageState, u stages.Unwinder, tx kv.RwTx, quiet bool) error {
+				return stages.SpawnBlockHashStage(s, tx, blockHashCfg, ctx)
+			},
+			Unwind: func(firstCycle bool, u *stages.UnwindState, s *stages.StageState, tx kv.RwTx) error {
+				return stages.UnwindBlockHashStage(u, tx, blockHashCfg, ctx)
+			},
+			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
+				return stages.PruneBlockHashStage(p, tx, blockHashCfg, ctx)
+			},
+		},
+		{
+			ID:          stages2.CumulativeIndex,
+			Description: "Write Cumulative Index",
+			Forward: func(firstCycle bool, badBlockUnwind bool, s *stages.StageState, u stages.Unwinder, tx kv.RwTx, quiet bool) error {
+				return stages.SpawnStageCumulativeIndex(cumulativeIndex, s, tx, ctx)
+			},
+			Unwind: func(firstCycle bool, u *stages.UnwindState, s *stages.StageState, tx kv.RwTx) error {
+				return stages.UnwindCumulativeIndexStage(u, cumulativeIndex, tx, ctx)
+			},
+			Prune: func(firstCycle bool, p *stages.PruneState, tx kv.RwTx) error {
+				return stages.PruneCumulativeIndexStage(p, tx, ctx)
 			},
 		},
 		{
@@ -484,6 +494,7 @@ func DefaultZkStages(
 
 var AllStagesZk = []stages2.SyncStage{
 	stages2.L1Syncer,
+	//	stages2.L1BlockSync,
 	stages2.Batches,
 	stages2.CumulativeIndex,
 	stages2.BlockHashes,
@@ -491,6 +502,8 @@ var AllStagesZk = []stages2.SyncStage{
 	stages2.Execution,
 	stages2.HashState,
 	stages2.IntermediateHashes,
+	//	stages2.AccountHistoryIndex,
+	//	stages2.StorageHistoryIndex,
 	stages2.LogIndex,
 	stages2.CallTraces,
 	stages2.TxLookup,
@@ -500,11 +513,14 @@ var AllStagesZk = []stages2.SyncStage{
 var ZkSequencerUnwindOrder = stages.UnwindOrder{
 	stages2.IntermediateHashes, // need to unwind SMT before we remove history
 	stages2.Execution,
+	stages2.BlockHashes,
 	stages2.L1Syncer,
 	stages2.L1BlockSync,
 	stages2.DataStream,
+	stages2.CumulativeIndex,
 	stages2.HashState,
 	stages2.CallTraces,
+	stages2.Senders,
 	stages2.AccountHistoryIndex,
 	stages2.StorageHistoryIndex,
 	stages2.LogIndex,
@@ -519,6 +535,7 @@ var ZkUnwindOrder = stages.UnwindOrder{
 	stages2.BlockHashes,
 	stages2.IntermediateHashes, // need to unwind SMT before we remove history
 	stages2.Execution,
+	stages2.CumulativeIndex,
 	stages2.HashState,
 	stages2.Senders,
 	stages2.CallTraces,

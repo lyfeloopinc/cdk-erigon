@@ -108,6 +108,7 @@ func NewSequencerZkStages(ctx context.Context,
 
 	return zkStages.SequencerZkStages(ctx,
 		stagedsync.StageCumulativeIndexCfg(db),
+		stagedsync.StageBlockHashesCfg(db, dirs.Tmp, controlServer.ChainConfig),
 		zkStages.StageL1SequencerSyncCfg(db, cfg.Zk, l1Syncer),
 		zkStages.StageSequencerL1BlockSyncCfg(db, cfg.Zk, l1BlockSyncer),
 		zkStages.StageDataStreamCatchupCfg(datastreamServer, db, cfg.Genesis.Config.ChainID.Uint64(), zkStages.NodeTypeSequencer),

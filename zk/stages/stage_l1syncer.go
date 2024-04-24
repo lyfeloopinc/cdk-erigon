@@ -278,13 +278,7 @@ func UnwindL1SyncerStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg L1SyncerCfg,
 		}
 		defer tx.Rollback()
 	}
-	log.Debug("l1 sync: unwinding")
-
-	/*
-		1. unwind sequences table
-		2. unwind verifications table
-		3. update l1verifications batchno and l1syncer stage progress
-	*/
+	log.Info(fmt.Sprintf("[%s] Unwinding L1 syncer stage"), "to", u.UnwindPoint)
 
 	err = tx.ClearBucket(hermez_db.L1SEQUENCES)
 	if err != nil {
@@ -295,33 +289,19 @@ func UnwindL1SyncerStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg L1SyncerCfg,
 		return err
 	}
 
-	// the below are very inefficient due to key layout
-	//hermezDb := hermez_db.NewHermezDb(tx)
-	//err = hermezDb.TruncateSequences(u.UnwindPoint)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//err = hermezDb.TruncateVerifications(u.UnwindPoint)
-	//if err != nil {
-	//	return err
-	//}
-	// get the now latest l1 verification
-	//v, err := hermezDb.GetLatestVerification()
-	//if err != nil {
-	//	return err
-	//}
-
 	if err := stages.SaveStageProgress(tx, stages.L1VerificationsBatchNo, 0); err != nil {
 		return fmt.Errorf("failed to save stage progress, %w", err)
 	}
 	if err := stages.SaveStageProgress(tx, stages.L1Syncer, 0); err != nil {
 		return fmt.Errorf("failed to save stage progress, %w", err)
 	}
-
-	if err := u.Done(tx); err != nil {
-		return err
+	if err := stages.SaveStageProgress(tx, stages.VerificationsStateRootCheck, 0); err != nil {
+		return fmt.Errorf("failed to save stage progress, %w", err)
 	}
+
+	// if err := u.Done(tx); err != nil {
+	// 	return err
+	// }
 	if !useExternalTx {
 		if err := tx.Commit(); err != nil {
 			return err
