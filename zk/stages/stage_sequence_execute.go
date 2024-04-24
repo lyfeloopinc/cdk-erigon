@@ -906,17 +906,18 @@ func attemptAddTransaction(
 
 	ibs.Prepare(transaction.Hash(), common.Hash{}, 0)
 
+	evm := vm.NewZkEVM(*blockContext, evmtypes.TxContext{}, ibs, cfg.chainConfig, *cfg.zkVmConfig)
+
 	receipt, execResult, err := core.ApplyTransaction_zkevm(
 		cfg.chainConfig,
-		blockContext,
 		cfg.engine,
+		evm,
 		gasPool,
 		ibs,
 		noop,
 		header,
 		transaction,
 		&header.GasUsed,
-		*cfg.zkVmConfig,
 		effectiveGasPrice)
 
 	if err != nil {

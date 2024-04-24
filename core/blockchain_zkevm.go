@@ -64,8 +64,7 @@ func ExecuteBlockEphemerallyZk(
 		blockGasLimit = 18446744073709551615
 	}
 
-	gp := new(GasPool)
-	gp.AddGas(blockGasLimit)
+	gp := new(GasPool).AddGas(blockGasLimit)
 
 	var (
 		rejectedTxs []*RejectedTx
@@ -92,20 +91,13 @@ func ExecuteBlockEphemerallyZk(
 			vmConfig.Tracer = tracer
 			writeTrace = true
 		}
-		gp.Reset(blockGasLimit)
-
-		ibs.Prepare(tx.Hash(), block.Hash(), txIndex)
-		effectiveGasPricePercentage, err := roHermezDb.GetEffectiveGasPricePercentage(tx.Hash())
+		txHash := tx.Hash()
+		evm, effectiveGasPricePercentage, err := PrepareForTxExecution(chainConfig, vmConfig, blockContext, roHermezDb, ibs, block, &txHash, txIndex)
 		if err != nil {
 			return nil, err
 		}
 
-		zkConfig := vm.NewZkConfig(*vmConfig, nil)
-		// Add addresses to access list if applicable
-		// about the transaction and calling mechanisms.
-		zkConfig.Config.SkipAnalysis = SkipAnalysis(chainConfig, blockNum)
-
-		receipt, execResult, err := ApplyTransaction_zkevm(chainConfig, blockContext, engine, gp, ibs, state.NewNoopWriter(), header, tx, usedGas, zkConfig, effectiveGasPricePercentage)
+		receipt, execResult, err := ApplyTransaction_zkevm(chainConfig, engine, evm, gp, ibs, state.NewNoopWriter(), header, tx, usedGas, effectiveGasPricePercentage)
 		if err != nil {
 			return nil, err
 		}
@@ -326,40 +318,6 @@ func PrepareBlockTxExecution(
 	ibs.SyncerPreExecuteStateSet(chainConfig, blockNum, blockTime, &prevBlockRoot, &blockGer, &l1BlockHash, gersInBetween)
 	///////////////////////////////////////////
 	// [zkevm] finish set preexecution state //
-	///////////////////////////////////////////
-
-	///////////////////////////////////////////
-	// [zkevm] initiate block info tree		 //
-	///////////////////////////////////////////
-	blockInfoTree = blockinfo.NewBlockInfoTree()
-	if chainConfig.IsForkID7Etrog(blockNum) {
-		coinbase := block.Coinbase()
-
-		// this is a case when we have injected batches
-		// we have to save the l1block hash and in this case we have to add
-		// the ger in that l1 bloc k into the block info tree
-		// even though it is previously added to the state
-		if l1BlockHash != (common.Hash{}) && blockGer == (common.Hash{}) {
-			blockGer, err = roHermezDb.GetGerForL1BlockHash(l1BlockHash)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-		}
-
-		if err := blockInfoTree.InitBlockHeader(
-			&prevBlockRoot,
-			&coinbase,
-			blockNum,
-			blockGasLimit,
-			blockTime,
-			&blockGer,
-			&l1BlockHash,
-		); err != nil {
-			return nil, nil, nil, err
-		}
-	}
-	///////////////////////////////////////////
-	// [zkevm] initiate block info tree		 //
 	///////////////////////////////////////////
 
 	blockContextImpl := NewEVMBlockContext(block.Header(), blockHashFunc, engine, author, excessDataGas)

@@ -52,17 +52,13 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 	// BlockContext := core.NewEVMBlockContext(header, core.GetHashFn(header, getHeader), engine, nil, excessDataGas)
 	hermezReader := hermez_db.NewHermezDbReader(dbtx)
 
-	zkConfig := vm.NewZkConfig(vm.Config{}, nil)
-	// Add addresses to access list if applicable
-	// about the transaction and calling mechanisms.
-	zkConfig.Config.SkipAnalysis = core.SkipAnalysis(cfg, block.NumberU64())
+	vmConfig := vm.NewTraceVmConfig()
 
-	blockContext, _, excessDataGas, err := core.PrepareBlockTxExecution(cfg, &vm.Config{}, core.GetHashFn(header, getHeader), nil, engine.(consensus.Engine), stagedsync.NewChainReaderImpl(cfg, dbtx, nil), block, statedb, hermezReader, block.GasLimit())
+	blockContext, _, excessDataGas, err := core.PrepareBlockTxExecution(cfg, &vmConfig, core.GetHashFn(header, getHeader), nil, engine.(consensus.Engine), stagedsync.NewChainReaderImpl(cfg, dbtx, nil), block, statedb, hermezReader, block.GasLimit())
 	if err != nil {
 		return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
 	}
 
-	vmenv := vm.NewZkEVM(*blockContext, evmtypes.TxContext{}, statedb, cfg, zkConfig)
 	// Recompute transactions up to the target index.
 	signer := types.MakeSigner(cfg, block.NumberU64())
 	if historyV3 {
@@ -81,7 +77,7 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 		return msg, *blockContext, TxContext, statedb, reader, nil
 	}
 
-	rules := vmenv.ChainRules()
+	gp := new(core.GasPool).AddGas(block.GasLimit())
 	for idx, txn := range block.Transactions() {
 		select {
 		default:
@@ -89,38 +85,24 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 			return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, ctx.Err()
 		}
 
-		statedb.Prepare(txn.Hash(), block.Hash(), idx)
-		// Assemble the transaction call message and return if the requested offset
-		effectiveGasPricePercentage, err := hermezReader.GetEffectiveGasPricePercentage(txn.Hash())
+		txHash := txn.Hash()
+		vmenv, effectiveGasPricePercentage, err := core.PrepareForTxExecution(cfg, &vmConfig, blockContext, hermezReader, statedb, block, &txHash, txIndex)
 		if err != nil {
 			return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
 		}
 
-		msg, err := txn.AsMessage(*signer, block.BaseFee(), rules)
+		msg, txContext, err := core.GetTxContext(cfg, engine, statedb, header, txn, vmenv, effectiveGasPricePercentage)
 		if err != nil {
 			return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
 		}
-		msg.SetEffectiveGasPricePercentage(effectiveGasPricePercentage)
 
-		if msg.FeeCap().IsZero() && engine != nil {
-			syscall := func(contract libcommon.Address, data []byte) ([]byte, error) {
-				return core.SysCallContract(contract, data, *cfg, statedb, header, engine, true /* constCall */, excessDataGas)
-			}
-			msg.SetIsFree(engine.IsServiceTransaction(msg.From(), syscall))
-		}
-
-		TxContext := core.NewEVMTxContext(msg)
 		if idx == txIndex {
-			return msg, vmenv.Context(), TxContext, statedb, reader, nil
+			return msg, vmenv.Context(), txContext, statedb, reader, nil
 		}
-		vmenv.Reset(TxContext, statedb)
-		// Not yet the searched for transaction, execute on top of the current state
-		if _, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(txn.GetGas()), true /* refunds */, false /* gasBailout */); err != nil {
-			return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, fmt.Errorf("transaction %x failed: %w", txn.Hash(), err)
+
+		if _, _, err := core.ApplyMessageWithTxContext(msg, txContext, gp, statedb, reader.(*state.PlainState), header.Number, txn, nil, vmenv); err != nil {
+			return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
 		}
-		// Ensure any modifications are committed to the state
-		// Only delete empty objects if EIP161 (part of Spurious Dragon) is in effect
-		_ = statedb.FinalizeTx(rules, reader.(*state.PlainState))
 
 		if idx+1 == len(block.Transactions()) {
 			// Return the state from evaluating all txs in the block, note no msg or TxContext in this case

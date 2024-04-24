@@ -21,6 +21,7 @@ import (
 	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/core/vm"
+	"github.com/ledgerwatch/erigon/core/vm/evmtypes"
 	"github.com/ledgerwatch/erigon/eth/ethconsensusconfig"
 	"github.com/ledgerwatch/erigon/params"
 	seq "github.com/ledgerwatch/erigon/zk/sequencer"
@@ -297,17 +298,18 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 
 			vmCfg.CounterCollector = txCounters.ExecutionCounters()
 
+			evm := vm.NewZkEVM(blockContext, evmtypes.TxContext{}, ibs, chainConfig, vmCfg)
+
 			_, result, err := core.ApplyTransaction_zkevm(
 				chainConfig,
-				&blockContext,
 				engine,
+				evm,
 				gasPool,
 				ibs,
 				noop,
 				header,
 				transaction,
 				&header.GasUsed,
-				vmCfg,
 				zktypes.EFFECTIVE_GAS_PRICE_PERCENTAGE_MAXIMUM,
 			)
 

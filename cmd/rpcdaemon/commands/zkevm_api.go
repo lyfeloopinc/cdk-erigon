@@ -286,6 +286,8 @@ func (api *ZkEvmAPIImpl) populateBlockDetail(
 	// the call later to `getReceipts` sets the incorrect sender because of this so we need to calc and hold
 	// these ahead of time.  TODO: fix senders stage to avoid this or update them with the new hash in execution
 	number := baseBlock.NumberU64()
+	hermezReader := hermez_db.NewHermezDbReader(tx)
+
 	signer := eritypes.MakeSigner(cc, number)
 	var senders []common.Address
 	var effectiveGasPricePercentages []uint8
@@ -296,7 +298,7 @@ func (api *ZkEvmAPIImpl) populateBlockDetail(
 				return types.Block{}, err
 			}
 			senders = append(senders, sender)
-			effectiveGasPricePercentage, err := api.ethApi.getEffectiveGasPricePercentage(tx, txn.Hash())
+			effectiveGasPricePercentage, err := hermezReader.GetEffectiveGasPricePercentage(txn.Hash())
 			if err != nil {
 				return types.Block{}, err
 			}
