@@ -76,15 +76,6 @@ func (api *PrivateDebugAPIImpl) traceBlock(ctx context.Context, blockNrOrHash rp
 		config.BorTraceEnabled = newBoolPtr(false)
 	}
 
-	var excessDataGas *big.Int
-	parentBlock, err := api.blockByHashWithSenders(tx, block.ParentHash())
-	if err != nil {
-		stream.WriteNil()
-		return err
-	}
-	if parentBlock != nil {
-		excessDataGas = parentBlock.ExcessDataGas()
-	}
 	chainConfig, err := api.chainConfig(tx)
 	if err != nil {
 		stream.WriteNil()
@@ -98,7 +89,6 @@ func (api *PrivateDebugAPIImpl) traceBlock(ctx context.Context, blockNrOrHash rp
 		return err
 	}
 
-	signer := types.MakeSigner(chainConfig, block.NumberU64())
 	rules := chainConfig.Rules(block.NumberU64(), block.Time())
 	stream.WriteArrayStart()
 
@@ -120,17 +110,18 @@ func (api *PrivateDebugAPIImpl) traceBlock(ctx context.Context, blockNrOrHash rp
 			stream.WriteNil()
 			return ctx.Err()
 		}
-		ibs.Prepare(txn.Hash(), block.Hash(), idx)
-		msg, _ := txn.AsMessage(*signer, block.BaseFee(), rules)
 
-		effectiveGasPricePercentage, err := hermezReader.GetEffectiveGasPricePercentage(txn.Hash())
-		msg.SetEffectiveGasPricePercentage(effectiveGasPricePercentage)
+		txHash := txn.Hash()
+		evm, effectiveGasPricePercentage, err := core.PrepareForTxExecution(chainConfig, &vm.Config{}, &blockCtx, hermezReader, ibs, block, &txHash, idx)
+		if err != nil {
+			stream.WriteNil()
+			return err
+		}
 
-		if msg.FeeCap().IsZero() && engine != nil {
-			syscall := func(contract common.Address, data []byte) ([]byte, error) {
-				return core.SysCallContract(contract, data, *chainConfig, ibs, block.Header(), engine, true /* constCall */, excessDataGas)
-			}
-			msg.SetIsFree(engine.IsServiceTransaction(msg.From(), syscall))
+		msg, _, err := core.GetTxContext(chainConfig, engine, ibs, block.Header(), txn, evm, effectiveGasPricePercentage)
+		if err != nil {
+			stream.WriteNil()
+			return err
 		}
 
 		txCtx := evmtypes.TxContext{

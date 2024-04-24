@@ -24,6 +24,7 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/adapter/ethapi"
 	"github.com/ledgerwatch/erigon/turbo/rpchelper"
 	"github.com/ledgerwatch/erigon/turbo/transactions"
+	"github.com/ledgerwatch/erigon/zk/hermez_db"
 )
 
 // TraceBlockByNumber implements debug_traceBlockByNumber. Returns Geth style block traces.
@@ -86,15 +87,6 @@ func (api *PrivateDebugAPIImpl) traceBlock_deprecated(ctx context.Context, block
 		config.BorTraceEnabled = newBoolPtr(false)
 	}
 
-	var excessDataGas *big.Int
-	parentBlock, err := api.blockByHashWithSenders(tx, block.ParentHash())
-	if err != nil {
-		stream.WriteNil()
-		return err
-	}
-	if parentBlock != nil {
-		excessDataGas = parentBlock.ExcessDataGas()
-	}
 	chainConfig, err := api.chainConfig(tx)
 	if err != nil {
 		stream.WriteNil()
@@ -108,7 +100,6 @@ func (api *PrivateDebugAPIImpl) traceBlock_deprecated(ctx context.Context, block
 		return err
 	}
 
-	signer := types.MakeSigner(chainConfig, block.NumberU64())
 	rules := chainConfig.Rules(block.NumberU64(), block.Time())
 	stream.WriteArrayStart()
 
@@ -119,6 +110,7 @@ func (api *PrivateDebugAPIImpl) traceBlock_deprecated(ctx context.Context, block
 	}
 
 	cumulativeGas := uint64(0)
+	hermezReader := hermez_db.NewHermezDbReader(tx)
 
 	for idx, txn := range txns {
 		stream.WriteObjectStart()
@@ -129,14 +121,18 @@ func (api *PrivateDebugAPIImpl) traceBlock_deprecated(ctx context.Context, block
 			stream.WriteNil()
 			return ctx.Err()
 		}
-		ibs.Prepare(txn.Hash(), block.Hash(), idx)
-		msg, _ := txn.AsMessage(*signer, block.BaseFee(), rules)
 
-		if msg.FeeCap().IsZero() && engine != nil {
-			syscall := func(contract common.Address, data []byte) ([]byte, error) {
-				return core.SysCallContract(contract, data, *chainConfig, ibs, block.Header(), engine, true /* constCall */, excessDataGas)
-			}
-			msg.SetIsFree(engine.IsServiceTransaction(msg.From(), syscall))
+		txHash := txn.Hash()
+		evm, effectiveGasPricePercentage, err := core.PrepareForTxExecution(chainConfig, &vm.Config{}, &blockCtx, hermezReader, ibs, block, &txHash, idx)
+		if err != nil {
+			stream.WriteNil()
+			return err
+		}
+
+		msg, _, err := core.GetTxContext(chainConfig, engine, ibs, block.Header(), txn, evm, effectiveGasPricePercentage)
+		if err != nil {
+			stream.WriteNil()
+			return err
 		}
 
 		txCtx := evmtypes.TxContext{

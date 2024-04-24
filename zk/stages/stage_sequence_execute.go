@@ -94,7 +94,7 @@ func SpawnSequencingStage(
 		var decodedBlock zktx.DecodedBatchL2Data
 		var deltaTimestamp uint64 = math.MaxUint64
 		var blockTransactions []types.Transaction
-		var effectiveGases []uint8
+		var l1EffectiveGases, effectiveGases []uint8
 
 		batchTicker := time.NewTicker(cfg.zk.SequencerBatchSealTime)
 		defer batchTicker.Stop()
@@ -114,7 +114,7 @@ func SpawnSequencingStage(
 			}
 			deltaTimestamp = uint64(decodedBlock.DeltaTimestamp)
 			blockTransactions = decodedBlock.Transactions
-			effectiveGases = decodedBlock.EffectiveGasPricePercentages
+			l1EffectiveGases = decodedBlock.EffectiveGasPricePercentages
 		}
 
 		log.Info(fmt.Sprintf("[%s] Starting batch %d...", logPrefix, thisBatch))
@@ -212,10 +212,12 @@ func SpawnSequencingStage(
 							var effectiveGas uint8
 
 							if l1Recovery {
-								effectiveGas = effectiveGases[i]
+								effectiveGas = l1EffectiveGases[i]
 							} else {
 								effectiveGas = DeriveEffectiveGasPrice(cfg, transaction)
 							}
+
+							effectiveGases = append(effectiveGases, effectiveGas)
 
 							receipt, overflow, err = attemptAddTransaction(cfg, sdb, ibs, batchCounters, &blockContext, header, transaction, effectiveGas, l1Recovery)
 							if err != nil {
@@ -260,7 +262,7 @@ func SpawnSequencingStage(
 				}
 			} else {
 				for idx, transaction := range addedTransactions {
-					effectiveGas := DeriveEffectiveGasPrice(cfg, transaction)
+					effectiveGas := effectiveGases[idx]
 					receipt, innerOverflow, err := attemptAddTransaction(cfg, sdb, ibs, batchCounters, &blockContext, header, transaction, effectiveGas, false)
 					if err != nil {
 						return err
@@ -278,7 +280,7 @@ func SpawnSequencingStage(
 				return err
 			}
 
-			if err = doFinishBlockAndUpdateState(ctx, cfg, s, sdb, ibs, header, parentBlock, forkId, thisBatch, ger, l1BlockHash, addedTransactions, addedReceipts, infoTreeIndexProgress); err != nil {
+			if err = doFinishBlockAndUpdateState(ctx, cfg, s, sdb, ibs, header, parentBlock, forkId, thisBatch, ger, l1BlockHash, addedTransactions, addedReceipts, effectiveGases, infoTreeIndexProgress); err != nil {
 				return err
 			}
 

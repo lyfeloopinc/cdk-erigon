@@ -51,7 +51,7 @@ func GetTxContext(config *chain.Config, engine consensus.EngineReader, ibs *stat
 	if msg.FeeCap().IsZero() && engine != nil {
 		// Only zero-gas transactions may be service ones
 		syscall := func(contract libcommon.Address, data []byte) ([]byte, error) {
-			return SysCallContract(contract, data, *config, ibs, header, engine, true /* constCall */, nil /*excessDataGas*/)
+			return SysCallContract(contract, data, *config, ibs, header, engine, true /* constCall */, evm.Context().ExcessDataGas)
 		}
 		msg.SetIsFree(engine.IsServiceTransaction(msg.From(), syscall))
 	}

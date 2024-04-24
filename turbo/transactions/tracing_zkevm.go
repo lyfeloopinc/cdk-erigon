@@ -54,7 +54,7 @@ func ComputeTxEnv_ZkEvm(ctx context.Context, engine consensus.EngineReader, bloc
 
 	vmConfig := vm.NewTraceVmConfig()
 
-	blockContext, _, excessDataGas, err := core.PrepareBlockTxExecution(cfg, &vmConfig, core.GetHashFn(header, getHeader), nil, engine.(consensus.Engine), stagedsync.NewChainReaderImpl(cfg, dbtx, nil), block, statedb, hermezReader, block.GasLimit())
+	blockContext, excessDataGas, _, _, err := core.PrepareBlockTxExecution(cfg, &vmConfig, core.GetHashFn(header, getHeader), nil, engine.(consensus.Engine), stagedsync.NewChainReaderImpl(cfg, dbtx, nil), block, statedb, hermezReader, block.GasLimit())
 	if err != nil {
 		return nil, evmtypes.BlockContext{}, evmtypes.TxContext{}, nil, nil, err
 	}

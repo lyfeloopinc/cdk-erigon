@@ -50,14 +50,15 @@ func processInjectedInitialBatch(
 		return err
 	}
 
-	txn, receipt, err := handleInjectedBatch(cfg, sdb, ibs, blockContext, injected, header, parentBlock, forkId)
+	txn, receipt, effectiveGas, err := handleInjectedBatch(cfg, sdb, ibs, blockContext, injected, header, parentBlock, forkId)
 	if err != nil {
 		return err
 	}
 
 	txns := types.Transactions{*txn}
 	receipts := types.Receipts{receipt}
-	return doFinishBlockAndUpdateState(ctx, cfg, s, sdb, ibs, header, parentBlock, forkId, injectedBatchNumber, injected.LastGlobalExitRoot, injected.L1ParentHash, txns, receipts, 0)
+	effectiveGases := []uint8{effectiveGas}
+	return doFinishBlockAndUpdateState(ctx, cfg, s, sdb, ibs, header, parentBlock, forkId, injectedBatchNumber, injected.LastGlobalExitRoot, injected.L1ParentHash, txns, receipts, effectiveGases, 0)
 }
 
 func handleInjectedBatch(
@@ -69,16 +70,16 @@ func handleInjectedBatch(
 	header *types.Header,
 	parentBlock *types.Block,
 	forkId uint64,
-) (*types.Transaction, *types.Receipt, error) {
+) (*types.Transaction, *types.Receipt, uint8, error) {
 	decodedBlocks, err := zktx.DecodeBatchL2Blocks(injected.Transaction, 5)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	if len(decodedBlocks) == 0 || len(decodedBlocks) > 1 {
-		return nil, nil, errors.New("expected 1 block for the injected batch")
+		return nil, nil, 0, errors.New("expected 1 block for the injected batch")
 	}
 	if len(decodedBlocks[0].Transactions) == 0 {
-		return nil, nil, errors.New("expected 1 transaction in the injected batch")
+		return nil, nil, 0, errors.New("expected 1 transaction in the injected batch")
 	}
 
 	batchCounters := vm.NewBatchCounterCollector(sdb.smt.GetDepth(), uint16(forkId))
@@ -87,8 +88,8 @@ func handleInjectedBatch(
 	effectiveGas := DeriveEffectiveGasPrice(cfg, decodedBlocks[0].Transactions[0])
 	receipt, _, err := attemptAddTransaction(cfg, sdb, ibs, batchCounters, blockContext, header, decodedBlocks[0].Transactions[0], effectiveGas, false)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
-	return &decodedBlocks[0].Transactions[0], receipt, nil
+	return &decodedBlocks[0].Transactions[0], receipt, effectiveGas, nil
 }
