@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/log/v3"
 
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/ledgerwatch/erigon/common/math"
+	"github.com/ledgerwatch/erigon/core"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/core/types"
@@ -65,6 +67,8 @@ func SpawnSequencingStage(
 		return err
 	}
 
+	getHeader := func(hash common.Hash, number uint64) *types.Header { return rawdb.ReadHeader(sdb.tx, hash, number) }
+
 	// injected batch
 	if executionAt == 0 {
 		header, parentBlock, err := prepareHeader(tx, executionAt, math.MaxUint64, forkId, cfg.zk.AddressSequencer)
@@ -72,7 +76,10 @@ func SpawnSequencingStage(
 			return err
 		}
 
-		err = processInjectedInitialBatch(ctx, cfg, s, sdb, forkId, header, parentBlock)
+		getHashFn := core.GetHashFn(header, getHeader)
+		blockContext := core.NewEVMBlockContext(header, getHashFn, cfg.engine, &cfg.zk.AddressSequencer, parentBlock.ExcessDataGas())
+
+		err = processInjectedInitialBatch(ctx, cfg, s, sdb, forkId, header, parentBlock, &blockContext)
 		if err != nil {
 			return err
 		}
@@ -143,6 +150,10 @@ func SpawnSequencingStage(
 				return err
 			}
 
+			getHashFn := core.GetHashFn(header, getHeader)
+
+			blockContext := core.NewEVMBlockContext(header, getHashFn, cfg.engine, &cfg.zk.AddressSequencer, parentBlock.ExcessDataGas())
+
 			if !reRunBlockAfterOverflow {
 				// start waiting for a new transaction to arrive
 				log.Info(fmt.Sprintf("[%s] Waiting for txs from the pool...", logPrefix))
@@ -193,7 +204,7 @@ func SpawnSequencingStage(
 								effectiveGas = DeriveEffectiveGasPrice(cfg, transaction)
 							}
 
-							receipt, overflow, err = attemptAddTransaction(cfg, sdb, ibs, batchCounters, header, parentBlock.Header(), transaction, effectiveGas, l1Recovery)
+							receipt, overflow, err = attemptAddTransaction(cfg, sdb, ibs, batchCounters, &blockContext, header, transaction, effectiveGas, l1Recovery)
 							if err != nil {
 								return err
 							}
@@ -237,7 +248,7 @@ func SpawnSequencingStage(
 			} else {
 				for idx, transaction := range addedTransactions {
 					effectiveGas := DeriveEffectiveGasPrice(cfg, transaction)
-					receipt, innerOverflow, err := attemptAddTransaction(cfg, sdb, ibs, batchCounters, header, parentBlock.Header(), transaction, effectiveGas, false)
+					receipt, innerOverflow, err := attemptAddTransaction(cfg, sdb, ibs, batchCounters, &blockContext, header, transaction, effectiveGas, false)
 					if err != nil {
 						return err
 					}

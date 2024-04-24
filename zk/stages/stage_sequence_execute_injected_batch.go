@@ -8,6 +8,7 @@ import (
 	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/core/vm"
+	"github.com/ledgerwatch/erigon/core/vm/evmtypes"
 	"github.com/ledgerwatch/erigon/eth/stagedsync"
 	zktx "github.com/ledgerwatch/erigon/zk/tx"
 	zktypes "github.com/ledgerwatch/erigon/zk/types"
@@ -26,6 +27,7 @@ func processInjectedInitialBatch(
 	forkId uint64,
 	header *types.Header,
 	parentBlock *types.Block,
+	blockContext *evmtypes.BlockContext,
 ) error {
 	injected, err := sdb.hermezDb.GetL1InjectedBatch(0)
 	if err != nil {
@@ -48,7 +50,7 @@ func processInjectedInitialBatch(
 		return err
 	}
 
-	txn, receipt, err := handleInjectedBatch(cfg, sdb, ibs, injected, header, parentBlock, forkId)
+	txn, receipt, err := handleInjectedBatch(cfg, sdb, ibs, blockContext, injected, header, parentBlock, forkId)
 	if err != nil {
 		return err
 	}
@@ -62,6 +64,7 @@ func handleInjectedBatch(
 	cfg SequenceBlockCfg,
 	sdb *stageDb,
 	ibs *state.IntraBlockState,
+	blockContext *evmtypes.BlockContext,
 	injected *zktypes.L1InjectedBatch,
 	header *types.Header,
 	parentBlock *types.Block,
@@ -82,7 +85,7 @@ func handleInjectedBatch(
 
 	// process the tx and we can ignore the counters as an overflow at this stage means no network anyway
 	effectiveGas := DeriveEffectiveGasPrice(cfg, decodedBlocks[0].Transactions[0])
-	receipt, _, err := attemptAddTransaction(cfg, sdb, ibs, batchCounters, header, parentBlock.Header(), decodedBlocks[0].Transactions[0], effectiveGas, false)
+	receipt, _, err := attemptAddTransaction(cfg, sdb, ibs, batchCounters, blockContext, header, decodedBlocks[0].Transactions[0], effectiveGas, false)
 	if err != nil {
 		return nil, nil, err
 	}
