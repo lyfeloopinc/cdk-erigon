@@ -47,6 +47,12 @@ func ApplyFlagsForZkConfig(ctx *cli.Context, cfg *ethconfig.Config) {
 		panic(fmt.Sprintf("could not parse sequencer batch seal time timeout value %s", sequencerBatchSealTimeVal))
 	}
 
+	sequencerNonEmptyBatchSealTimeVal := ctx.String(utils.SequencerNonEmptyBatchSealTime.Name)
+	sequencerNonEmptyBatchSealTime, err := time.ParseDuration(sequencerNonEmptyBatchSealTimeVal)
+	if err != nil {
+		panic(fmt.Sprintf("could not parse sequencer batch seal time timeout value %s", sequencerNonEmptyBatchSealTimeVal))
+	}
+
 	effectiveGasPriceForEthTransferVal := ctx.Float64(utils.EffectiveGasPriceForEthTransfer.Name)
 	effectiveGasPriceForErc20TransferVal := ctx.Float64(utils.EffectiveGasPriceForErc20Transfer.Name)
 	effectiveGasPriceForContractInvocationVal := ctx.Float64(utils.EffectiveGasPriceForContractInvocation.Name)
@@ -88,8 +94,10 @@ func ApplyFlagsForZkConfig(ctx *cli.Context, cfg *ethconfig.Config) {
 		SequencerInitialForkId:                 ctx.Uint64(utils.SequencerInitialForkId.Name),
 		SequencerBlockSealTime:                 sequencerBlockSealTime,
 		SequencerBatchSealTime:                 sequencerBatchSealTime,
+		SequencerNonEmptyBatchSealTime:         sequencerNonEmptyBatchSealTime,
 		ExecutorUrls:                           strings.Split(ctx.String(utils.ExecutorUrls.Name), ","),
 		ExecutorStrictMode:                     ctx.Bool(utils.ExecutorStrictMode.Name),
+		L1QueryBlocksThreads:                   ctx.Uint64(utils.L1QueryBlocksThreads.Name),
 		AllowFreeTransactions:                  ctx.Bool(utils.AllowFreeTransactions.Name),
 		AllowPreEIP155Transactions:             ctx.Bool(utils.AllowPreEIP155Transactions.Name),
 		EffectiveGasPriceForEthTransfer:        uint8(math.Round(effectiveGasPriceForEthTransferVal * 255.0)),
@@ -120,12 +128,8 @@ func ApplyFlagsForZkConfig(ctx *cli.Context, cfg *ethconfig.Config) {
 		checkFlag(utils.ExecutorStrictMode.Name, cfg.ExecutorStrictMode)
 
 		// if we are running in strict mode, the default, and we have no executor URLs then we panic
-		if cfg.Zk.ExecutorStrictMode && (len(cfg.Zk.ExecutorUrls) == 0 || cfg.ExecutorUrls[0] == "") {
+		if cfg.ExecutorStrictMode && !cfg.HasExecutors() {
 			panic("You must set executor urls when running in executor strict mode (zkevm.executor-strict)")
-		}
-
-		if cfg.Zk.ExecutorStrictMode && cfg.Zk.AllowPreEIP155Transactions {
-			panic("You must disable pre-EIP155 transactions when running in executor strict mode (zkevm.executor-strict)")
 		}
 	}
 

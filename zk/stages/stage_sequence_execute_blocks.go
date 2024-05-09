@@ -27,6 +27,7 @@ func handleStateForNewBlockStarting(
 	hermezDb *hermez_db.HermezDb,
 	ibs *state.IntraBlockState,
 	blockNumber uint64,
+	batchNumber uint64,
 	timestamp uint64,
 	stateRoot *common.Hash,
 	l1info *zktypes.L1InfoTreeUpdate,
@@ -34,8 +35,10 @@ func handleStateForNewBlockStarting(
 ) error {
 	ibs.PreExecuteStateSet(chainConfig, blockNumber, timestamp, stateRoot)
 
-	// handle writing to the ger manager contract
-	if l1info != nil {
+	// handle writing to the ger manager contract but only if the index is above 0
+	// block 1 is a special case as it's the injected batch, so we always need to check the GER/L1 block hash
+	// as these will be force-fed from the event from L1
+	if l1info != nil && l1info.Index > 0 || blockNumber == 1 {
 		// store it so we can retrieve for the data stream
 		if err := hermezDb.WriteBlockGlobalExitRoot(blockNumber, l1info.GER); err != nil {
 			return err
@@ -51,7 +54,9 @@ func handleStateForNewBlockStarting(
 			if l1BlockHash == (common.Hash{}) {
 				// not in the contract so let's write it!
 				ibs.WriteGerManagerL1BlockHash(l1info.GER, l1info.ParentHash)
-
+				if err := hermezDb.WriteLatestUsedGer(batchNumber, l1info.GER); err != nil {
+					return err
+				}
 			}
 		}
 	}

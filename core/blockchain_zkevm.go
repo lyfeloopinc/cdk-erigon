@@ -305,7 +305,11 @@ func PrepareBlockTxExecution(
 
 	blockTime := block.Time()
 	prevBlockRoot := prevBlockheader.Root
-	ibs.SyncerPreExecuteStateSet(chainConfig, blockNum, blockTime, &prevBlockRoot, &blockGer, &blockL1BlockHash, gersInBetween)
+	l1InfoTreeIndexReused, err := roHermezDb.GetReusedL1InfoTreeIndex(blockNum)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	ibs.SyncerPreExecuteStateSet(chainConfig, blockNum, blockTime, &prevBlockRoot, &blockGer, l1BlockHash, gersInBetween, l1InfoTreeIndexReused)
 	///////////////////////////////////////////
 	// [zkevm] finish set preexecution state //
 	///////////////////////////////////////////

@@ -195,7 +195,6 @@ type Ethereum struct {
 	dataStream *datastreamer.StreamServer
 	l1Syncer   *syncer.L1Syncer
 	etherMan   *etherman.Client
-	nodeType   byte
 
 	preStartTasks *PreStartTasks
 }
@@ -783,11 +782,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			l1Topics,
 			cfg.L1BlockRange,
 			cfg.L1QueryDelay,
+			cfg.L1QueryBlocksThreads,
 		)
 
 		if isSequencer {
-			backend.nodeType = zkStages.NodeTypeSequencer
-
 			// if we are sequencing transactions, we do the sequencing loop...
 			witnessGenerator := witness.NewGenerator(
 				config.Dirs,
@@ -817,6 +815,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 				backend.chainDB,
 				witnessGenerator,
 				backend.l1Syncer,
+				backend.dataStream,
 			)
 
 			verifier.StartWork()
@@ -831,6 +830,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 				[][]libcommon.Hash{{contracts.SequenceBatchesTopic}},
 				cfg.L1BlockRange,
 				cfg.L1QueryDelay,
+				cfg.L1QueryBlocksThreads,
 			)
 
 			backend.syncStages = stages2.NewSequencerZkStages(
@@ -865,8 +865,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			  ZZZZZZZ  K   K  R   R   P       CCCC
 
 			*/
-
-			backend.nodeType = zkStages.NodeTypeSynchronizer
 
 			streamClient := initDataStreamClient(ctx, cfg.Zk)
 
@@ -1030,7 +1028,7 @@ func (s *Ethereum) PreStart() error {
 		// so here we loop and take a brief pause waiting for it to be ready
 		attempts := 0
 		for {
-			_, err = zkStages.CatchupDatastream("stream-catchup", tx, s.dataStream, s.nodeType, s.chainConfig.ChainID.Uint64())
+			_, err = zkStages.CatchupDatastream("stream-catchup", tx, s.dataStream, s.chainConfig.ChainID.Uint64())
 			if err != nil {
 				if errors.Is(err, datastreamer.ErrAtomicOpNotAllowed) {
 					attempts++

@@ -33,7 +33,7 @@ import (
 )
 
 var (
-	maxGetProofRewindBlockCount uint64 = 10_000
+	maxGetProofRewindBlockCount uint64 = 500_000
 
 	ErrEndBeforeStart = errors.New("end block must be higher than start block")
 )
@@ -263,6 +263,9 @@ func populateDbTables(batch *memdb.MemoryMutation) error {
 		hermez_db.L1_BLOCK_HASHES,
 		hermez_db.BLOCK_L1_BLOCK_HASHES,
 		hermez_db.INTERMEDIATE_TX_STATEROOTS,
+		hermez_db.REUSED_L1_INFO_TREE_INDEX,
+		hermez_db.LATEST_USED_GER,
+		hermez_db.L1_INFO_TREE_UPDATES_BY_GER,
 	}
 
 	for _, t := range tables {

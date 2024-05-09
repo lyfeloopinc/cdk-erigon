@@ -19,6 +19,7 @@ import (
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
 	"github.com/ledgerwatch/erigon/eth/stagedsync"
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
+	"github.com/ledgerwatch/erigon/zk/datastream/server"
 	zktx "github.com/ledgerwatch/erigon/zk/tx"
 	"github.com/ledgerwatch/erigon/zk/utils"
 )
@@ -84,6 +85,11 @@ func SpawnSequencingStage(
 			return err
 		}
 
+		srv := server.NewDataStreamServer(cfg.stream, cfg.chainConfig.ChainID.Uint64(), server.StandardOperationMode)
+		if err = server.WriteBlocksToStream(tx, sdb.hermezDb.HermezDbReader, srv, cfg.stream, 1, 1, logPrefix); err != nil {
+			return err
+		}
+
 		if freshTx {
 			if err = tx.Commit(); err != nil {
 				return err
@@ -105,52 +111,64 @@ func SpawnSequencingStage(
 	var decodedBlocks []zktx.DecodedBatchL2Data // only used in l1 recovery
 	var blockTransactions []types.Transaction
 	var l1EffectiveGases, effectiveGases []uint8
+	l1Recovery := cfg.zk.L1SyncStartBlock > 0
 
 	batchTicker := time.NewTicker(cfg.zk.SequencerBatchSealTime)
 	defer batchTicker.Stop()
+	nonEmptyBatchTimer := time.NewTicker(cfg.zk.SequencerNonEmptyBatchSealTime)
+	defer nonEmptyBatchTimer.Stop()
+
+	hasAnyTransactionsInThisBatch := false
 	thisBatch := lastBatch + 1
 	batchCounters := vm.NewBatchCounterCollector(sdb.smt.GetDepth(), uint16(forkId))
 	runLoopBlocks := true
 	lastStartedBn := executionAt - 1
 	yielded := mapset.NewSet[[32]byte]()
 	coinbase := cfg.zk.AddressSequencer
-	l1Recovery := cfg.zk.L1SyncStartBlock > 0
 	workRemaining := true
-	blockTracking := 0
+	decodedBlocksSize := uint64(0)
 
 	if l1Recovery {
+		// let's check if we have any L1 data to recover
 		decodedBlocks, coinbase, workRemaining, err = getNextL1BatchData(thisBatch, forkId, sdb.hermezDb)
 		if err != nil {
 			return err
+		}
+		decodedBlocksSize = uint64(len(decodedBlocks))
+		if decodedBlocksSize == 0 {
+			log.Info(fmt.Sprintf("[%s] L1 recovery has completed!", logPrefix), "batch", thisBatch)
+			time.Sleep(1 * time.Second)
+			return nil
 		}
 	}
 
 	log.Info(fmt.Sprintf("[%s] Starting batch %d...", logPrefix, thisBatch))
 
-	for bn := executionAt; runLoopBlocks; bn++ {
+	var blockNumber uint64
+	for blockNumber = executionAt; runLoopBlocks; blockNumber++ {
 		if l1Recovery {
-			// have we exhausted the blocks we have to recover?
-			if blockTracking >= len(decodedBlocks) {
+			decodedBlocksIndex := blockNumber - executionAt
+			if decodedBlocksIndex == decodedBlocksSize {
 				runLoopBlocks = false
 				break
 			}
 
-			decodedBlock = decodedBlocks[blockTracking]
+			decodedBlock = decodedBlocks[decodedBlocksIndex]
 			deltaTimestamp = uint64(decodedBlock.DeltaTimestamp)
 			l1EffectiveGases = decodedBlock.EffectiveGasPricePercentages
 			blockTransactions = decodedBlock.Transactions
 		}
 
-		log.Info(fmt.Sprintf("[%s] Starting block %d...", logPrefix, bn+1))
+		log.Info(fmt.Sprintf("[%s] Starting block %d...", logPrefix, blockNumber+1))
 
-		reRunBlockAfterOverflow := bn == lastStartedBn
-		lastStartedBn = bn
+		reRunBlockAfterOverflow := blockNumber == lastStartedBn
+		lastStartedBn = blockNumber
 
 		if !reRunBlockAfterOverflow {
 			clonedBatchCounters = batchCounters.Clone()
 			addedTransactions = []types.Transaction{}
 			addedReceipts = []*types.Receipt{}
-			header, parentBlock, err = prepareHeader(tx, bn, deltaTimestamp, forkId, coinbase)
+			header, parentBlock, err = prepareHeader(tx, blockNumber, deltaTimestamp, forkId, coinbase)
 			if err != nil {
 				return err
 			}
@@ -168,6 +186,14 @@ func SpawnSequencingStage(
 			}
 		}
 
+		overflowOnNewBlock, err := batchCounters.StartNewBlock()
+		if err != nil {
+			return err
+		}
+		if !l1Recovery && overflowOnNewBlock {
+			break
+		}
+
 		thisBlockNumber := header.Number.Uint64()
 
 		infoTreeIndexProgress, l1TreeUpdate, l1TreeUpdateIndex, l1BlockHash, ger, shouldWriteGerToContract, err := prepareL1AndInfoTreeRelatedStuff(sdb, &decodedBlock, l1Recovery)
@@ -175,20 +201,30 @@ func SpawnSequencingStage(
 			return err
 		}
 
-		batchCounters.StartNewBlock()
-
 		ibs := state.New(sdb.stateReader)
 		getHashFn := core.GetHashFn(header, getHeader)
 		blockContext := core.NewEVMBlockContext(header, getHashFn, cfg.engine, &cfg.zk.AddressSequencer, parentBlock.ExcessDataGas())
 
 		parentRoot := parentBlock.Root()
-		if err = handleStateForNewBlockStarting(cfg.chainConfig, sdb.hermezDb, ibs, thisBlockNumber, header.Time, &parentRoot, l1TreeUpdate, shouldWriteGerToContract); err != nil {
+		if err = handleStateForNewBlockStarting(
+			cfg.chainConfig,
+			sdb.hermezDb,
+			ibs,
+			thisBlockNumber,
+			thisBatch,
+			header.Time,
+			&parentRoot,
+			l1TreeUpdate,
+			shouldWriteGerToContract,
+		); err != nil {
 			return err
 		}
 
 		if !reRunBlockAfterOverflow {
 			// start waiting for a new transaction to arrive
-			log.Info(fmt.Sprintf("[%s] Waiting for txs from the pool...", logPrefix))
+			if !l1Recovery {
+				log.Info(fmt.Sprintf("[%s] Waiting for txs from the pool...", logPrefix))
+			}
 
 			// we don't care about defer order here we just need to make sure the tickers are stopped to
 			// avoid a leak
@@ -207,10 +243,19 @@ func SpawnSequencingStage(
 				case <-logTicker.C:
 					log.Info(fmt.Sprintf("[%s] Waiting some more for txs from the pool...", logPrefix))
 				case <-blockTicker.C:
-					break LOOP_TRANSACTIONS
+					if !l1Recovery {
+						break LOOP_TRANSACTIONS
+					}
 				case <-batchTicker.C:
-					runLoopBlocks = false
-					break LOOP_TRANSACTIONS
+					if !l1Recovery {
+						runLoopBlocks = false
+						break LOOP_TRANSACTIONS
+					}
+				case <-nonEmptyBatchTimer.C:
+					if !l1Recovery && hasAnyTransactionsInThisBatch {
+						runLoopBlocks = false
+						break LOOP_TRANSACTIONS
+					}
 				default:
 					if !l1Recovery {
 						cfg.txPool.LockFlusher()
@@ -229,23 +274,40 @@ func SpawnSequencingStage(
 							effectiveGas = l1EffectiveGases[i]
 						} else {
 							effectiveGas = DeriveEffectiveGasPrice(cfg, transaction)
+							effectiveGases = append(effectiveGases, effectiveGas)
 						}
 						effectiveGases = append(effectiveGases, effectiveGas)
 
 						receipt, overflow, err = attemptAddTransaction(cfg, sdb, ibs, batchCounters, &blockContext, header, transaction, effectiveGas, l1Recovery)
 						if err != nil {
+							// if we are in recovery just log the error as a warning.  If the data is on the L1 then we should consider it as confirmed.
+							// The executor/prover would simply skip a TX with an invalid nonce for example so we don't need to worry about that here.
+							if l1Recovery {
+								log.Warn(fmt.Sprintf("[%s] error adding transaction to batch during recovery: %v", logPrefix, err))
+								continue
+							}
 							return err
 						}
 						if !l1Recovery && overflow {
 							log.Info(fmt.Sprintf("[%s] overflowed adding transaction to batch", logPrefix), "batch", thisBatch, "tx-hash", transaction.Hash(), "txs before overflow", len(addedTransactions))
+							/*
+								There are two cases when overflow could occur.
+								1. The block DOES not contains any transactions.
+									In this case it means that a single tx overflow entire zk-counters.
+									In this case we mark it so. Once marked it will be discarded from the tx-pool async (once the tx-pool process the creation of a new batch)
+									NB: The tx SHOULD not be removed from yielded set, because if removed, it will be picked again on next block
+								2. The block contains transactions.
+									In this case, we just have to remove the transaction that overflowed the zk-counters and all transactions after it, from the yielded set.
+									This removal will ensure that these transaction could be added in the next block(s)
+							*/
 							if len(addedTransactions) == 0 {
-								return fmt.Errorf("single transaction %s overflow counters", transaction.Hash())
-							}
-
-							// remove from yielded so they can be processed again
-							txSize := len(blockTransactions)
-							for ; i < txSize; i++ {
-								yielded.Remove(transaction.Hash())
+								cfg.txPool.MarkForDiscardFromPendingBest(transaction.Hash())
+								log.Trace(fmt.Sprintf("single transaction %s overflow counters", transaction.Hash()))
+							} else {
+								txSize := len(blockTransactions)
+								for ; i < txSize; i++ {
+									yielded.Remove(transaction.Hash())
+								}
 							}
 
 							break LOOP_TRANSACTIONS
@@ -253,6 +315,9 @@ func SpawnSequencingStage(
 
 						addedTransactions = append(addedTransactions, transaction)
 						addedReceipts = append(addedReceipts, receipt)
+
+						hasAnyTransactionsInThisBatch = true
+						nonEmptyBatchTimer.Reset(cfg.zk.SequencerNonEmptyBatchSealTime)
 					}
 
 					if l1Recovery {
@@ -260,19 +325,15 @@ func SpawnSequencingStage(
 						// has finished as far as it can go
 						if len(blockTransactions) == 0 && !workRemaining {
 							log.Info(fmt.Sprintf("[%s] L1 recovery no more transactions to recover", logPrefix))
-							continue
 						}
 
-						// if we had transactions then break the loop because we don't need to wait for more
-						// because we got them from the DB
-						runLoopBlocks = false
 						break LOOP_TRANSACTIONS
 					}
 				}
 			}
 			if !l1Recovery && overflow {
-				bn--     // in order to trigger reRunBlockAfterOverflow check
-				continue // lets execute the same block again
+				blockNumber-- // in order to trigger reRunBlockAfterOverflow check
+				continue      // lets execute the same block again
 			}
 		} else {
 			for idx, transaction := range addedTransactions {
@@ -299,7 +360,6 @@ func SpawnSequencingStage(
 		}
 
 		log.Info(fmt.Sprintf("[%s] Finish block %d with %d transactions...", logPrefix, thisBlockNumber, len(addedTransactions)))
-		blockTracking++
 	}
 
 	counters, err := batchCounters.CombineCollectors()
@@ -311,6 +371,15 @@ func SpawnSequencingStage(
 	err = sdb.hermezDb.WriteBatchCounters(thisBatch, counters.UsedAsMap())
 	if err != nil {
 		return err
+	}
+
+	// if we do not have an executors in the zk config then we can populate the stream immediately with the latest
+	// batch information
+	if !cfg.zk.HasExecutors() {
+		srv := server.NewDataStreamServer(cfg.stream, cfg.chainConfig.ChainID.Uint64(), server.StandardOperationMode)
+		if err = server.WriteBlocksToStream(tx, sdb.hermezDb.HermezDbReader, srv, cfg.stream, executionAt+1, blockNumber, logPrefix); err != nil {
+			return err
+		}
 	}
 
 	log.Info(fmt.Sprintf("[%s] Finish batch %d...", logPrefix, thisBatch))

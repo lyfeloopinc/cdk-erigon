@@ -456,6 +456,11 @@ var (
 		Usage: "Batch seal time. Defaults to 12s",
 		Value: "12s",
 	}
+	SequencerNonEmptyBatchSealTime = cli.StringFlag{
+		Name:  "zkevm.sequencer-non-empty-batch-seal-time",
+		Usage: "Batch seal time. Defaults to 3s",
+		Value: "3s",
+	}
 	ExecutorUrls = cli.StringFlag{
 		Name:  "zkevm.executor-urls",
 		Usage: "A comma separated list of grpc addresses that host executors",
@@ -485,6 +490,11 @@ var (
 		Name:  "zkevm.data-stream-host",
 		Usage: "Define the host used for the zkevm data stream",
 		Value: "",
+	}
+	L1QueryBlocksThreads = cli.Uint64Flag{
+		Name:  "zkevm.l1-query-blocks-threads",
+		Usage: "Define the number of threads used to query blocks from L1",
+		Value: 1,
 	}
 	AllowFreeTransactions = cli.BoolFlag{
 		Name:  "zkevm.allow-free-transactions",

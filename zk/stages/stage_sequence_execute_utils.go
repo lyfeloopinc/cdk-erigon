@@ -14,6 +14,7 @@ import (
 
 	"errors"
 
+	"github.com/0xPolygonHermez/zkevm-data-streamer/datastreamer"
 	"github.com/ledgerwatch/erigon/chain"
 	"github.com/ledgerwatch/erigon/common/math"
 	"github.com/ledgerwatch/erigon/consensus"
@@ -75,6 +76,7 @@ type SequenceBlockCfg struct {
 	syncCfg   ethconfig.Sync
 	genesis   *types.Genesis
 	agg       *libstate.AggregatorV3
+	stream    *datastreamer.StreamServer
 	zk        *ethconfig.Zk
 
 	txPool   *txpool.TxPool
@@ -99,6 +101,7 @@ func StageSequenceBlocksCfg(
 	genesis *types.Genesis,
 	syncCfg ethconfig.Sync,
 	agg *libstate.AggregatorV3,
+	stream *datastreamer.StreamServer,
 	zk *ethconfig.Zk,
 
 	txPool *txpool.TxPool,
@@ -121,6 +124,7 @@ func StageSequenceBlocksCfg(
 		historyV3:     historyV3,
 		syncCfg:       syncCfg,
 		agg:           agg,
+		stream:        stream,
 		zk:            zk,
 		txPool:        txPool,
 		txPoolDb:      txPoolDb,
@@ -238,7 +242,8 @@ func prepareL1AndInfoTreeRelatedStuff(sdb *stageDb, decodedBlock *zktx.DecodedBa
 		}
 	}
 
-	if l1TreeUpdate != nil {
+	// we only want GER and l1 block hash for indexes above 0 - 0 is a special case
+	if l1TreeUpdate != nil && l1TreeUpdateIndex > 0 {
 		l1BlockHash = l1TreeUpdate.ParentHash
 		ger = l1TreeUpdate.GER
 	}
