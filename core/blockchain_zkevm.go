@@ -309,7 +309,7 @@ func PrepareBlockTxExecution(
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	ibs.SyncerPreExecuteStateSet(chainConfig, blockNum, blockTime, &prevBlockRoot, &blockGer, l1BlockHash, gersInBetween, l1InfoTreeIndexReused)
+	ibs.SyncerPreExecuteStateSet(chainConfig, blockNum, blockTime, &prevBlockRoot, &blockGer, &blockL1BlockHash, gersInBetween, l1InfoTreeIndexReused)
 	///////////////////////////////////////////
 	// [zkevm] finish set preexecution state //
 	///////////////////////////////////////////
