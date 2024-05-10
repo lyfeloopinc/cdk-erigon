@@ -32,11 +32,11 @@ func BuildBlockInfoTree(
 	blockGasUsed uint64,
 	ger common.Hash,
 	l1BlockHash common.Hash,
-	parentHash common.Hash,
+	previousStateRoot common.Hash,
 	transactionInfos *[]ExecutedTxInfo,
 ) (*common.Hash, error) {
 	infoTree := NewBlockInfoTree()
-	if err := infoTree.InitBlockHeader(&parentHash, coinbase, blockNumber, blockGasLimit, blockTime, &ger, &l1BlockHash); err != nil {
+	if err := infoTree.InitBlockHeader(&previousStateRoot, coinbase, blockNumber, blockGasLimit, blockTime, &ger, &l1BlockHash); err != nil {
 		return nil, err
 	}
 	var err error

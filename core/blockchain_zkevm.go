@@ -49,6 +49,7 @@ func ExecuteBlockEphemerallyZk(
 	chainReader consensus.ChainHeaderReader,
 	getTracer func(txIndex int, txHash common.Hash) (vm.EVMLogger, error),
 	roHermezDb state.ReadOnlyHermezDb,
+	prevBlockRoot *common.Hash,
 ) (*EphemeralExecResult, error) {
 
 	defer BlockExecutionTimer.UpdateDuration(time.Now())
@@ -189,7 +190,7 @@ func ExecuteBlockEphemerallyZk(
 			*usedGas,
 			*ger,
 			*l1Blockhash,
-			header.ParentHash,
+			*prevBlockRoot,
 			&txInfos,
 		)
 		if err != nil {
