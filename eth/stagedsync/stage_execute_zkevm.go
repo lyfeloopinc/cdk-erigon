@@ -193,8 +193,6 @@ Loop:
 		if err := postExecuteCommitValues(cfg, tx, eridb, batch, preExecuteHeaderHash, block, senders); err != nil {
 			return err
 		}
-
-		break
 	}
 
 	if err = s.Update(batch, stageProgress); err != nil {
