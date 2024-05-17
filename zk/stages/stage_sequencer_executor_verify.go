@@ -114,8 +114,12 @@ func SpawnSequencerExecutorVerifyStage(
 			// todo: remove any witnesses for batches higher than the one failing (including the failing one)
 
 			// for now just return early and do not update any stage progress, safest option for now
-			log.Error("Batch failed verification, skipping updating executor verify progress", "batch", response.BatchNumber)
-			break
+			log.Error("!!!")
+			log.Error("!!! Batch failed verification, skipping updating executor verify progress", "batch", response.BatchNumber)
+			log.Error("!!!")
+
+			// DO NOT MERGE - TESTING ONLY
+			//break
 		}
 
 		// all good so just update the stage progress for now
