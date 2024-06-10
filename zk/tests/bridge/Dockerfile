@@ -10,7 +10,9 @@ RUN curl -L https://foundry.paradigm.xyz | bash && \
 ENV PATH="/root/.foundry/bin:$PATH"
 
 COPY bridge.sh /usr/local/bin/bridge.sh
+COPY run-bridge-e2e.sh /usr/local/bin/run-bridge-e2e.sh
 RUN chmod +x /usr/local/bin/bridge.sh
+RUN chmod +x /usr/loca/bin/run-bridge-e2e.sh
 
 ENV RAW_PRIVATE_KEY bc6a95c870cce28fe9686fdd70a3a595769e019bb396cd725bc16ec553f07c83
 ENV DESTINATION_NET 1
@@ -24,4 +26,4 @@ ENV ETH_RPC_URL https://rpc.cardona.zkevm-rpc.com
 ENV BRIDGE_API_URL https://bridge-api-cdk-validium-cardona-03-zkevm.polygondev.tools
 ENV DRY_RUN true
 
-CMD ["bash", "/usr/local/bin/bridge.sh"]
+CMD ["bash", "/usr/local/bin/run-bridge-e2e.sh"]
