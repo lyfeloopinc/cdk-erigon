@@ -76,6 +76,15 @@ func (g *Generator) GenerateWitness(tx kv.Tx, ctx context.Context, startBlock, e
 		return getWitnessBytes(witness, debug)
 	}
 
+	latestSmtBlock, err := stages.GetStageProgress(tx, stages.IntermediateHashes)
+	if err != nil {
+		return nil, err
+	}
+
+	if startBlock > latestSmtBlock {
+		return nil, fmt.Errorf("SMT is not yet at this block height SMTBlockHeight=%d RequestedStartBlock=%d", latestSmtBlock, startBlock)
+	}
+
 	latestBlock, err := stages.GetStageProgress(tx, stages.Execution)
 	if err != nil {
 		return nil, err
