@@ -341,8 +341,6 @@ func (r *RootHashAggregator) Receive(itemType StreamItem,
 	//}
 	//
 
-	fmt.Printf("1: %d, %x, %x, %x\n", itemType, accountKey, storageKey, hash)
-
 	switch itemType {
 	case StorageStreamItem:
 		if len(r.currAccK) == 0 {
