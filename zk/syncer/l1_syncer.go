@@ -217,6 +217,10 @@ func (s *L1Syncer) GetOldAccInputHash(ctx context.Context, addr *common.Address,
 			continue
 		}
 
+		if batchNum == 0 && previousBatch == 0 {
+			return common.Hash{}, nil
+		}
+
 		// if the hash is zero, we need to go back to the previous batch
 		batchNum = previousBatch
 		loopCount++

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 
 	"github.com/gateway-fm/cdk-erigon-lib/common"
@@ -12,6 +13,7 @@ import (
 	"github.com/gateway-fm/cdk-erigon-lib/common/hexutility"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	jsoniter "github.com/json-iterator/go"
+	zktypes "github.com/ledgerwatch/erigon/zk/types"
 
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon/common/hexutil"
@@ -302,27 +304,34 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 		}
 	}
 
-	// global exit root of batch
-	ger, err := hermezDb.GetBatchGlobalExitRoot(bn)
+	//for consistency with leagacy node, return nil if no transactions
+	if len(batch.Transactions) == 0 {
+		batch.Transactions = nil
+	}
+
+	ger, err := getBatchGer(hermezDb, bn)
 	if err != nil {
 		return nil, err
 	}
 	if ger != nil {
-		batch.GlobalExitRoot = ger.GlobalExitRoot
+		batch.GlobalExitRoot = *ger
 	}
 
 	// sequence
-	seq, err := hermezDb.GetSequenceByBatchNo(bn)
+	seq, err := hermezDb.GetSequenceByBatchNoInRange(bn)
 	if err != nil {
 		return nil, err
 	}
+
+	var batchL1SequenceBlockNumber uint64
 	if seq != nil {
 		batch.SendSequencesTxHash = &seq.L1TxHash
+		batchL1SequenceBlockNumber = seq.L1BlockNo
 	}
 	batch.Closed = seq != nil || bn == 0 || bn == 1 // sequenced, genesis or injected batch 1 - special batches 0,1 will always be closed
 
 	// verification
-	ver, err := hermezDb.GetVerificationByBatchNo(bn)
+	ver, err := hermezDb.GetVerificationByBatchNoInRange(bn)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +347,7 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 	batch.BatchL2Data = batchL2Data
 
 	// exit roots
-	infoTreeUpdate, err := hermezDb.GetL1InfoTreeUpdateByGer(batch.GlobalExitRoot)
+	infoTreeUpdate, err := getBatchL1InfoTreeUpdate(hermezDb, batchL1SequenceBlockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -348,15 +357,59 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 	}
 
 	// currently gives 'error execution reverted' when calling the L1
-	//oaih, err := api.l1Syncer.GetOldAccInputHash(ctx, &api.config.AddressRollup, ApiRollupId, bn+1)
-	//if err != nil {
-	//	return nil, err
-	//}
-	//batch.AccInputHash = oaih
+	oaih, err := api.l1Syncer.GetOldAccInputHash(ctx, &api.config.AddressRollup, ApiRollupId, bn+1)
+	if err != nil {
+		return nil, err
+	}
+	batch.AccInputHash = oaih
 
 	//batch.LocalExitRoot = ver.LocalExitRoot
 
 	return populateBatchDetails(batch)
+}
+
+func getBatchL1InfoTreeUpdate(hermezDb *hermez_db.HermezDbReader, batchL1SequenceBlockNumber uint64) (*zktypes.L1InfoTreeUpdate, error) {
+	infoTreeUpdates, err := hermezDb.GetAllL1InfoTreeUpdatee()
+	if err != nil {
+		return nil, err
+	}
+
+	var foundL1BlockNumber uint64 = math.MaxUint64
+	var foundInfoTreeUpdate *zktypes.L1InfoTreeUpdate
+	for _, infoTreeUpdate := range *infoTreeUpdates {
+		if infoTreeUpdate.BlockNumber >= batchL1SequenceBlockNumber && infoTreeUpdate.BlockNumber < foundL1BlockNumber {
+			foundL1BlockNumber = infoTreeUpdate.BlockNumber
+			foundInfoTreeUpdate = &infoTreeUpdate
+		}
+	}
+
+	return foundInfoTreeUpdate, nil
+}
+
+func getBatchGer(hermezDb *hermez_db.HermezDbReader, bn uint64) (*common.Hash, error) {
+	// global exit root of batch
+	batchGer, err := hermezDb.GetBatchGlobalExitRoot(bn)
+	if err != nil {
+		return nil, err
+	}
+
+	if batchGer != nil {
+		return &batchGer.GlobalExitRoot, nil
+	}
+
+	// get last block in batch
+	lastBlockInbatch, err := hermezDb.GetHighestBlockInBatch(bn)
+	if err != nil {
+		return nil, err
+	}
+
+	// get latest found ger by block
+	latestBlockGer, err := hermezDb.GetBlockGlobalExitRoot(lastBlockInbatch)
+	if err != nil {
+		return nil, err
+	}
+
+	return &latestBlockGer, nil
 }
 
 // GetFullBlockByNumber returns a full block from the current canonical chain. If number is nil, the

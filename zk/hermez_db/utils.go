@@ -3,7 +3,9 @@ package hermez_db
 import (
 	"encoding/binary"
 	"fmt"
+
 	"github.com/gateway-fm/cdk-erigon-lib/common"
+	"github.com/ledgerwatch/erigon/zk/types"
 )
 
 var emptyHash = common.Hash{0}
@@ -32,6 +34,27 @@ func Uint8ToBytes(i uint8) []byte {
 	buf := make([]byte, 1)
 	buf[0] = i
 	return buf
+}
+
+func ParseL1BatchInfo(batchNo, l1BlockNo uint64, v []byte) (*types.L1BatchInfo, error) {
+	if len(v) != 96 && len(v) != 64 {
+		return nil, fmt.Errorf("invalid hash length")
+	}
+
+	l1TxHash := common.BytesToHash(v[:32])
+	stateRoot := common.BytesToHash(v[32:64])
+	var l1InfoRoot common.Hash
+	if len(v) > 64 {
+		l1InfoRoot = common.BytesToHash(v[64:])
+	}
+
+	return &types.L1BatchInfo{
+		BatchNo:    batchNo,
+		L1BlockNo:  l1BlockNo,
+		StateRoot:  stateRoot,
+		L1TxHash:   l1TxHash,
+		L1InfoRoot: l1InfoRoot,
+	}, nil
 }
 
 func SplitKey(data []byte) (uint64, uint64, error) {

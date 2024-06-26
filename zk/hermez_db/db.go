@@ -258,12 +258,20 @@ func (db *HermezDbReader) GetSequenceByBatchNo(batchNo uint64) (*types.L1BatchIn
 	return db.getByBatchNo(L1SEQUENCES, batchNo)
 }
 
+func (db *HermezDbReader) GetSequenceByBatchNoInRange(batchNo uint64) (*types.L1BatchInfo, error) {
+	return db.getByBatchNoInRange(L1SEQUENCES, batchNo)
+}
+
 func (db *HermezDbReader) GetVerificationByL1Block(l1BlockNo uint64) (*types.L1BatchInfo, error) {
 	return db.getByL1Block(L1VERIFICATIONS, l1BlockNo)
 }
 
 func (db *HermezDbReader) GetVerificationByBatchNo(batchNo uint64) (*types.L1BatchInfo, error) {
 	return db.getByBatchNo(L1VERIFICATIONS, batchNo)
+}
+
+func (db *HermezDbReader) GetVerificationByBatchNoInRange(batchNo uint64) (*types.L1BatchInfo, error) {
+	return db.getByBatchNoInRange(L1VERIFICATIONS, batchNo)
 }
 
 func (db *HermezDbReader) getByL1Block(table string, l1BlockNo uint64) (*types.L1BatchInfo, error) {
@@ -304,6 +312,41 @@ func (db *HermezDbReader) getByL1Block(table string, l1BlockNo uint64) (*types.L
 	return nil, nil
 }
 
+func (db *HermezDbReader) getByBatchNoInRange(table string, batchNo uint64) (*types.L1BatchInfo, error) {
+	c, err := db.tx.Cursor(table)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	var k, v []byte
+	var foundBatch uint64 = math.MaxUint64
+	var l1BatchInfo *types.L1BatchInfo
+	for k, v, err = c.First(); k != nil; k, v, err = c.Next() {
+		if err != nil {
+			return nil, err
+		}
+
+		l1Block, batch, err := SplitKey(k)
+		if err != nil {
+			return nil, err
+		}
+
+		if batch >= batchNo && batch < foundBatch {
+			foundBatch = batch
+			if l1BatchInfo, err = ParseL1BatchInfo(batch, l1Block, v); err != nil {
+				return nil, err
+			}
+
+			if batch == batchNo {
+				break
+			}
+		}
+	}
+
+	return l1BatchInfo, nil
+}
+
 func (db *HermezDbReader) getByBatchNo(table string, batchNo uint64) (*types.L1BatchInfo, error) {
 	c, err := db.tx.Cursor(table)
 	if err != nil {
@@ -323,24 +366,7 @@ func (db *HermezDbReader) getByBatchNo(table string, batchNo uint64) (*types.L1B
 		}
 
 		if batch == batchNo {
-			if len(v) != 96 && len(v) != 64 {
-				return nil, fmt.Errorf("invalid hash length")
-			}
-
-			l1TxHash := common.BytesToHash(v[:32])
-			stateRoot := common.BytesToHash(v[32:64])
-			var l1InfoRoot common.Hash
-			if len(v) > 64 {
-				l1InfoRoot = common.BytesToHash(v[64:])
-			}
-
-			return &types.L1BatchInfo{
-				BatchNo:    batchNo,
-				L1BlockNo:  l1Block,
-				StateRoot:  stateRoot,
-				L1TxHash:   l1TxHash,
-				L1InfoRoot: l1InfoRoot,
-			}, nil
+			return ParseL1BatchInfo(batch, l1Block, v)
 		}
 	}
 
@@ -1092,6 +1118,27 @@ func (db *HermezDbReader) GetLatestL1InfoTreeUpdate() (*types.L1InfoTreeUpdate, 
 	result := &types.L1InfoTreeUpdate{}
 	result.Unmarshall(v)
 	return result, true, nil
+}
+
+func (db *HermezDbReader) GetAllL1InfoTreeUpdatee() (*[]types.L1InfoTreeUpdate, error) {
+	c, err := db.tx.Cursor(L1_INFO_TREE_UPDATES)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	var updates []types.L1InfoTreeUpdate
+	var k, v []byte
+	for k, v, err = c.First(); k != nil; k, v, err = c.Next() {
+		if err != nil {
+			break
+		}
+		update := &types.L1InfoTreeUpdate{}
+		update.Unmarshall(v)
+		updates = append(updates, *update)
+	}
+
+	return &updates, nil
 }
 
 func (db *HermezDb) WriteBlockL1InfoTreeIndex(blockNumber uint64, l1Index uint64) error {
