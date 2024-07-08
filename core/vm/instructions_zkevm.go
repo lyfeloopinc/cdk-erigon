@@ -171,45 +171,54 @@ func makeLog_zkevm(size int, logIndexPerTx bool) executionFunc {
 
 		d := scope.Memory.GetCopy(int64(mStart.Uint64()), int64(mSize.Uint64()))
 
-		forkBlock := uint64(0)
-		if interpreter.evm.ChainConfig().ForkID88ElderberryBlock != nil {
-			forkBlock = interpreter.VM.evm.ChainConfig().ForkID88ElderberryBlock.Uint64()
-		}
-		blockNo := interpreter.VM.evm.Context().BlockNumber
+		// rpc only
+		if interpreter.readOnly {
+			forkBlock := uint64(0)
+			if interpreter.evm.ChainConfig().ForkID88ElderberryBlock != nil {
+				forkBlock = interpreter.VM.evm.ChainConfig().ForkID88ElderberryBlock.Uint64()
+			}
+			blockNo := interpreter.VM.evm.Context().BlockNumber
 
-		// [hack] APPLY BUG ONLY ABOVE FORKID9
-		if forkBlock == 0 || blockNo < forkBlock {
-			// [zkEvm] fill 0 at the end
+			// [hack] APPLY BUG ONLY ABOVE FORKID9
+			if forkBlock == 0 || blockNo < forkBlock {
+				// [zkEvm] fill 0 at the end
+				dataLen := len(d)
+				lenMod32 := dataLen & 31
+				if lenMod32 != 0 {
+					d = append(d, make([]byte, 32-lenMod32)...)
+				}
+			} else {
+				// bug start
+				/*
+				  \  /
+				 (o)(o)
+				 /    \
+				 \    /
+				  \  /
+				   \/
+				*/
+				var err error
+
+				d, err = applyHexPadBug(d, int(mSize.Uint64()), blockNo)
+				if err != nil {
+					return nil, err
+				}
+				/*
+				  \  /
+				 (o)(o)
+				 /    \
+				 \    /
+				  \  /
+				   \/
+				*/
+				// bug end
+			}
+		} else {
 			dataLen := len(d)
 			lenMod32 := dataLen & 31
 			if lenMod32 != 0 {
 				d = append(d, make([]byte, 32-lenMod32)...)
 			}
-		} else {
-			// bug start
-			/*
-			  \  /
-			 (o)(o)
-			 /    \
-			 \    /
-			  \  /
-			   \/
-			*/
-			var err error
-
-			d, err = applyHexPadBug(d, int(mSize.Uint64()), blockNo)
-			if err != nil {
-				return nil, err
-			}
-			/*
-			  \  /
-			 (o)(o)
-			 /    \
-			 \    /
-			  \  /
-			   \/
-			*/
-			// bug end
 		}
 
 		log := types.Log{
