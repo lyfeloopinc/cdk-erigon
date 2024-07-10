@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ledgerwatch/erigon/common/hexutil"
+	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/erigon/zkevm/encoding"
 	"github.com/ledgerwatch/erigon/zkevm/jsonrpc/client"
 	"github.com/ledgerwatch/log/v3"
@@ -115,6 +116,14 @@ func (api *APIImpl) GasPrice_nonRedirected(ctx context.Context) (*hexutil.Big, e
 
 	if truncateValue == nil {
 		return nil, fmt.Errorf("truncateValue nil value detected")
+	}
+
+	// if we return eth_gasPrice that is under params.InitialBaseFee
+	// then the transaction will be stuck in the mempool
+	minimalFee := big.NewInt(params.InitialBaseFee)
+
+	if truncateValue.Cmp(minimalFee) < 0 {
+		return (*hexutil.Big)(minimalFee), nil
 	}
 
 	return (*hexutil.Big)(truncateValue), nil
