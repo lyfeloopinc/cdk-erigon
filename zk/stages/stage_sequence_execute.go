@@ -250,6 +250,8 @@ func SpawnSequencingStage(
 		log.Info(fmt.Sprintf("[%s] Continuing unfinished batch %d from block %d", logPrefix, thisBatch, executionAt))
 	}
 
+	batchVerifier := NewBatchVerifier(tx, hasExecutorForThisBatch, forkId)
+
 	blockDataSizeChecker := NewBlockDataChecker()
 
 	prevHeader := rawdb.ReadHeaderByNumber(tx, executionAt)
@@ -543,26 +545,17 @@ func SpawnSequencingStage(
 
 		log.Info(fmt.Sprintf("[%s] Finish block %d with %d transactions...", logPrefix, thisBlockNumber, len(addedTransactions)))
 
-		if !hasExecutorForThisBatch {
-			// save counters midbatch
-			// here they shouldn't add more to counters other than what they already have
-			// because it would be later added twice
-			counters := batchCounters.CombineCollectorsNoChanges(l1InfoIndex != 0)
-
-			err = sdb.hermezDb.WriteBatchCounters(thisBatch, counters.UsedAsMap())
-			if err != nil {
-				return err
-			}
-
-			err = sdb.hermezDb.WriteIsBatchPartiallyProcessed(thisBatch)
-			if err != nil {
-				return err
-			}
-
-			if err = datastreamServer.WriteBlockToStream(logPrefix, tx, sdb.hermezDb, thisBatch, lastBatch, thisBlockNumber); err != nil {
-				return err
-			}
-
+		// add a check to the verifier and also check for responses
+		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap())
+		responses, err := batchVerifier.CheckProgress()
+		if err != nil {
+			return err
+		}
+		if err = writeBlockDetails(logPrefix, sdb, datastreamServer, hasExecutorForThisBatch, lastBatch, responses); err != nil {
+			return err
+		}
+		if len(responses) > 0 {
+			// commit the tx here, so we lock in our current progress
 			if err = tx.Commit(); err != nil {
 				return err
 			}
@@ -570,10 +563,8 @@ func SpawnSequencingStage(
 			if err != nil {
 				return err
 			}
-			// TODO: This creates stacked up deferrals
-			defer tx.Rollback()
+			defer tx.Rollback() // todo: stacking defers on this
 			sdb.SetTx(tx)
-
 			lastBatch = thisBatch
 		}
 	}

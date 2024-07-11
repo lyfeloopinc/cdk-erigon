@@ -320,7 +320,7 @@ func SpawnSequencerExecutorVerifyStage(
 				return errors.New("the network cannot have a 0 fork id")
 			}
 
-			cfg.verifier.AddRequestUnsafe(legacy_executor_verifier.NewVerifierRequest(batch, forkId, block.Root(), counters), cfg.cfgZk.SequencerBatchSealTime)
+			cfg.verifier.AddRequestUnsafe(legacy_executor_verifier.NewVerifierRequest(batch, 1, forkId, block.Root(), counters), cfg.cfgZk.SequencerBatchSealTime)
 		}
 	}
 

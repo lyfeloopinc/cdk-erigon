@@ -87,7 +87,7 @@ func (_this *LimboSubPoolProcessor) run() {
 
 	for _, limboBatch := range limboBatchDetails {
 		for _, limboTx := range limboBatch.Transactions {
-			request := legacy_executor_verifier.NewVerifierRequest(limboBatch.BatchNumber, limboBatch.ForkId, limboTx.Root, unlimitedCounters)
+			request := legacy_executor_verifier.NewVerifierRequest(limboBatch.BatchNumber, limboBatch.FirstBlockNumber, limboBatch.ForkId, limboTx.Root, unlimitedCounters)
 			err := _this.verifier.VerifySync(tx, request, limboBatch.Witness, limboTx.StreamBytes, limboBatch.TimestampLimit, limboBatch.FirstBlockNumber, limboBatch.L1InfoTreeMinTimestamps)
 			if err != nil {
 				idHash := hexutils.BytesToHex(limboTx.Hash[:])

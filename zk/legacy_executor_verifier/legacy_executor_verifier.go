@@ -28,15 +28,17 @@ var ErrNoExecutorAvailable = fmt.Errorf("no executor available")
 
 type VerifierRequest struct {
 	BatchNumber  uint64
+	BlockNumber  uint64
 	ForkId       uint64
 	StateRoot    common.Hash
 	Counters     map[string]int
 	creationTime time.Time
 }
 
-func NewVerifierRequest(batchNumber, forkId uint64, stateRoot common.Hash, counters map[string]int) *VerifierRequest {
+func NewVerifierRequest(batchNumber, blockNumber, forkId uint64, stateRoot common.Hash, counters map[string]int) *VerifierRequest {
 	return &VerifierRequest{
 		BatchNumber:  batchNumber,
+		BlockNumber:  blockNumber,
 		ForkId:       forkId,
 		StateRoot:    stateRoot,
 		Counters:     counters,
@@ -44,27 +46,29 @@ func NewVerifierRequest(batchNumber, forkId uint64, stateRoot common.Hash, count
 	}
 }
 
-func (vr *VerifierRequest) isOverdue() bool {
+func (vr *VerifierRequest) IsOverdue() bool {
 	return time.Since(vr.creationTime) > time.Duration(30*time.Minute)
 }
 
 type VerifierResponse struct {
 	BatchNumber      uint64
+	BlockNumber      uint64
 	Valid            bool
 	Witness          []byte
 	ExecutorResponse *executor.ProcessBatchResponseV2
+	OriginalCounters map[string]int
 	Error            error
 }
 
 type VerifierBundle struct {
-	request  *VerifierRequest
-	response *VerifierResponse
+	Request  *VerifierRequest
+	Response *VerifierResponse
 }
 
 func NewVerifierBundle(request *VerifierRequest, response *VerifierResponse) *VerifierBundle {
 	return &VerifierBundle{
-		request:  request,
-		response: response,
+		Request:  request,
+		Response: response,
 	}
 }
 
@@ -276,7 +280,7 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 			log.Error("error writing data to stream", "err", err)
 		}
 
-		verifierBundle.response = &VerifierResponse{
+		verifierBundle.Response = &VerifierResponse{
 			BatchNumber:      request.BatchNumber,
 			Valid:            ok,
 			Witness:          witness,
@@ -358,15 +362,15 @@ func (v *LegacyExecutorVerifier) ProcessResultsSequentiallyUnsafe(tx kv.RwTx) ([
 
 			log.Error("error on our end while preparing the verification request, re-queueing the task", "err", err)
 			// this is an error on our end, so just re-create the promise at exact position where it was
-			if verifierBundle.request.isOverdue() {
-				return nil, fmt.Errorf("error: batch %d couldn't be processed in 30 minutes", verifierBundle.request.BatchNumber)
+			if verifierBundle.Request.IsOverdue() {
+				return nil, fmt.Errorf("error: batch %d couldn't be processed in 30 minutes", verifierBundle.Request.BatchNumber)
 			}
 
 			v.promises[i] = NewPromise[*VerifierBundle](v.promises[i].task)
 			break
 		}
 
-		verifierResponse := verifierBundle.response
+		verifierResponse := verifierBundle.Response
 		results = append(results, verifierResponse)
 		delete(v.addedBatches, verifierResponse.BatchNumber)
 
