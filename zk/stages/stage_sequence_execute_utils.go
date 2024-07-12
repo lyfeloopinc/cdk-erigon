@@ -39,8 +39,6 @@ import (
 	zktypes "github.com/ledgerwatch/erigon/zk/types"
 	"github.com/ledgerwatch/erigon/zk/utils"
 	"github.com/ledgerwatch/log/v3"
-	"github.com/ledgerwatch/erigon/zk/datastream/server"
-	verifier "github.com/ledgerwatch/erigon/zk/legacy_executor_verifier"
 )
 
 const (
@@ -490,34 +488,4 @@ func (bdc *BlockDataChecker) AddTransactionData(txL2Data []byte) bool {
 	bdc.counter += encodedLen
 
 	return false
-}
-
-func writeBlockDetails(
-	logPrefix string,
-	sdb *stageDb,
-	datastreamServer *server.DataStreamServer,
-	hasExecutors bool,
-	lastBatch uint64,
-	verifiedResponses []*verifier.VerifierResponse,
-) error {
-	if !hasExecutors {
-		for _, response := range verifiedResponses {
-			err := sdb.hermezDb.WriteBatchCounters(response.BatchNumber, response.OriginalCounters)
-			if err != nil {
-				return err
-			}
-
-			err = sdb.hermezDb.WriteIsBatchPartiallyProcessed(response.BatchNumber)
-			if err != nil {
-				return err
-			}
-
-			if err = datastreamServer.WriteBlockToStream(logPrefix, sdb.tx, sdb.hermezDb, response.BatchNumber, lastBatch, response.BlockNumber); err != nil {
-				return err
-			}
-		}
-
-	}
-
-	return nil
 }

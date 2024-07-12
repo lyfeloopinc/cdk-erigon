@@ -251,6 +251,15 @@ func SpawnSequencingStage(
 	}
 
 	batchVerifier := NewBatchVerifier(tx, hasExecutorForThisBatch, forkId)
+	streamWriter := SequencerBatchStreamWriter{
+		ctx:           ctx,
+		db:            cfg.db,
+		logPrefix:     logPrefix,
+		batchVerifier: batchVerifier,
+		sdb:           sdb,
+		streamServer:  datastreamServer,
+		hasExecutors:  hasExecutorForThisBatch,
+	}
 
 	blockDataSizeChecker := NewBlockDataChecker()
 
@@ -547,24 +556,13 @@ func SpawnSequencingStage(
 
 		// add a check to the verifier and also check for responses
 		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap())
-		responses, err := batchVerifier.CheckProgress()
-		if err != nil {
+
+		// check for new responses from the verifier
+		if workDone, err := streamWriter.CheckForUpdates(lastBatch); err != nil {
 			return err
-		}
-		if err = writeBlockDetails(logPrefix, sdb, datastreamServer, hasExecutorForThisBatch, lastBatch, responses); err != nil {
-			return err
-		}
-		if len(responses) > 0 {
-			// commit the tx here, so we lock in our current progress
-			if err = tx.Commit(); err != nil {
-				return err
-			}
-			tx, err = cfg.db.BeginRw(ctx)
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback() // todo: stacking defers on this
-			sdb.SetTx(tx)
+		} else if workDone {
+			tx = sdb.tx
+			defer tx.Rollback()
 			lastBatch = thisBatch
 		}
 	}
