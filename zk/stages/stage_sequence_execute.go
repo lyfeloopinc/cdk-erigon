@@ -30,7 +30,7 @@ var SpecialZeroIndexHash = common.HexToHash("0x27AE5BA08D7291C96C8CBDDCC148BF48A
 func SpawnSequencingStage(
 	s *stagedsync.StageState,
 	u stagedsync.Unwinder,
-	tx kv.RwTx,
+	rootTx kv.RwTx,
 	ctx context.Context,
 	cfg SequenceBlockCfg,
 	quiet bool,
@@ -39,28 +39,28 @@ func SpawnSequencingStage(
 	log.Info(fmt.Sprintf("[%s] Starting sequencing stage", logPrefix))
 	defer log.Info(fmt.Sprintf("[%s] Finished sequencing stage", logPrefix))
 
-	freshTx := tx == nil
+	freshTx := rootTx == nil
 	if freshTx {
-		tx, err = cfg.db.BeginRw(ctx)
+		rootTx, err = cfg.db.BeginRw(ctx)
 		if err != nil {
 			return err
 		}
-		defer tx.Rollback()
+		defer rootTx.Rollback()
 	}
-
-	sdb := newStageDb(tx)
 
 	l1Recovery := cfg.zk.L1SyncStartBlock > 0
 
-	executionAt, err := s.ExecutionAt(tx)
+	executionAt, err := s.ExecutionAt(rootTx)
 	if err != nil {
 		return err
 	}
 
-	lastBatch, err := stages.GetStageProgress(tx, stages.HighestSeenBatchNumber)
+	lastBatch, err := stages.GetStageProgress(rootTx, stages.HighestSeenBatchNumber)
 	if err != nil {
 		return err
 	}
+
+	sdb := newStageDb(rootTx)
 
 	isLastBatchPariallyProcessed, err := sdb.hermezDb.GetIsBatchPartiallyProcessed(lastBatch)
 	if err != nil {
@@ -83,7 +83,7 @@ func SpawnSequencingStage(
 			return err
 		}
 
-		header, parentBlock, err := prepareHeader(tx, executionAt, math.MaxUint64, math.MaxUint64, forkId, cfg.zk.AddressSequencer)
+		header, parentBlock, err := prepareHeader(rootTx, executionAt, math.MaxUint64, math.MaxUint64, forkId, cfg.zk.AddressSequencer)
 		if err != nil {
 			return err
 		}
@@ -96,12 +96,12 @@ func SpawnSequencingStage(
 		}
 
 		// write the batch directly to the stream
-		if err = datastreamServer.WriteBlocksToStream(tx, sdb.hermezDb.HermezDbReader, injectedBatchBlockNumber, injectedBatchBlockNumber, logPrefix); err != nil {
+		if err = datastreamServer.WriteBlocksToStream(rootTx, sdb.hermezDb.HermezDbReader, injectedBatchBlockNumber, injectedBatchBlockNumber, logPrefix); err != nil {
 			return err
 		}
 
 		if freshTx {
-			if err = tx.Commit(); err != nil {
+			if err = rootTx.Commit(); err != nil {
 				return err
 			}
 		}
@@ -229,14 +229,14 @@ func SpawnSequencingStage(
 			if err = sdb.hermezDb.DeleteIsBatchPartiallyProcessed(thisBatch); err != nil {
 				return err
 			}
-			if err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, thisBatch); err != nil {
+			if err = stages.SaveStageProgress(rootTx, stages.HighestSeenBatchNumber, thisBatch); err != nil {
 				return err
 			}
 			if err = sdb.hermezDb.WriteForkId(thisBatch, forkId); err != nil {
 				return err
 			}
 			if freshTx {
-				if err = tx.Commit(); err != nil {
+				if err = rootTx.Commit(); err != nil {
 					return err
 				}
 			}
@@ -250,7 +250,7 @@ func SpawnSequencingStage(
 		log.Info(fmt.Sprintf("[%s] Continuing unfinished batch %d from block %d", logPrefix, thisBatch, executionAt))
 	}
 
-	batchVerifier := NewBatchVerifier(tx, hasExecutorForThisBatch, forkId)
+	batchVerifier := NewBatchVerifier(hasExecutorForThisBatch, forkId)
 	streamWriter := SequencerBatchStreamWriter{
 		ctx:           ctx,
 		db:            cfg.db,
@@ -263,12 +263,21 @@ func SpawnSequencingStage(
 
 	blockDataSizeChecker := NewBlockDataChecker()
 
-	prevHeader := rawdb.ReadHeaderByNumber(tx, executionAt)
+	prevHeader := rawdb.ReadHeaderByNumber(rootTx, executionAt)
 	batchDataOverflow := false
 
 	var block *types.Block
 	var thisBlockNumber uint64
+	lastTx := rootTx
 	for blockNumber := executionAt; runLoopBlocks; blockNumber++ {
+		// stack the transaction so that we can roll this back later if we need to and keep the previous
+		// state changes in-tact
+		innerTx, err := cfg.db.BeginNestedRw(ctx, lastTx.UnderlyingTx())
+		if err != nil {
+			return err
+		}
+		sdb.SetTx(innerTx)
+
 		if l1Recovery {
 			decodedBlocksIndex := blockNumber - executionAt
 			if decodedBlocksIndex == decodedBlocksSize {
@@ -298,7 +307,7 @@ func SpawnSequencingStage(
 			addedReceipts = []*types.Receipt{}
 			addedExecutionResults = []*core.ExecutionResult{}
 			effectiveGases = []uint8{}
-			header, parentBlock, err = prepareHeader(tx, blockNumber, deltaTimestamp, limboHeaderTimestamp, forkId, nextBatchData.Coinbase)
+			header, parentBlock, err = prepareHeader(innerTx, blockNumber, deltaTimestamp, limboHeaderTimestamp, forkId, nextBatchData.Coinbase)
 			if err != nil {
 				return err
 			}
@@ -548,23 +557,23 @@ func SpawnSequencingStage(
 			log.Debug(fmt.Sprintf("[%s] state root at block %d = %s", s.LogPrefix(), thisBlockNumber, block.Root().Hex()))
 		}
 
-		for _, tx := range addedTransactions {
-			log.Debug(fmt.Sprintf("[%s] Finish block %d with %s transaction", logPrefix, thisBlockNumber, tx.Hash().Hex()))
+		for _, transaction := range addedTransactions {
+			log.Debug(fmt.Sprintf("[%s] Finish block %d with %s transaction", logPrefix, thisBlockNumber, transaction.Hash().Hex()))
 		}
 
 		log.Info(fmt.Sprintf("[%s] Finish block %d with %d transactions...", logPrefix, thisBlockNumber, len(addedTransactions)))
 
 		// add a check to the verifier and also check for responses
-		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap())
+		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), innerTx)
 
 		// check for new responses from the verifier
-		if workDone, err := streamWriter.CheckForUpdates(lastBatch); err != nil {
-			return err
-		} else if workDone {
-			tx = sdb.tx
-			defer tx.Rollback()
-			lastBatch = thisBatch
+		if err := streamWriter.CheckAndCommitUpdates(lastBatch); err != nil {
+			innerTx.Rollback()
+			break
 		}
+
+		// get ready for the next level of nesting
+		lastTx = innerTx
 	}
 
 	l1InfoIndex, err := sdb.hermezDb.GetBlockL1InfoTreeIndex(lastStartedBn)
@@ -587,7 +596,7 @@ func SpawnSequencingStage(
 	}
 
 	// Local Exit Root (ler): read s/c storage every batch to store the LER for the highest block in the batch
-	ler, err := utils.GetBatchLocalExitRootFromSCStorage(thisBatch, sdb.hermezDb.HermezDbReader, tx)
+	ler, err := utils.GetBatchLocalExitRootFromSCStorage(thisBatch, sdb.hermezDb.HermezDbReader, lastTx)
 	if err != nil {
 		return err
 	}
@@ -599,13 +608,13 @@ func SpawnSequencingStage(
 	log.Info(fmt.Sprintf("[%s] Finish batch %d...", logPrefix, thisBatch))
 
 	if !hasExecutorForThisBatch {
-		if err = datastreamServer.WriteBatchEnd(logPrefix, tx, sdb.hermezDb, thisBatch, lastBatch, block.Root()); err != nil {
+		if err = datastreamServer.WriteBatchEnd(logPrefix, lastTx, sdb.hermezDb, thisBatch, lastBatch, block.Root()); err != nil {
 			return err
 		}
 	}
 
 	if freshTx {
-		if err = tx.Commit(); err != nil {
+		if err = lastTx.Commit(); err != nil {
 			return err
 		}
 	}

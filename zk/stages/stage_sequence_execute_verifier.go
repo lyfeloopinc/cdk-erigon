@@ -3,68 +3,86 @@ package stages
 import (
 	verifier "github.com/ledgerwatch/erigon/zk/legacy_executor_verifier"
 	"github.com/gateway-fm/cdk-erigon-lib/common"
-	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"sync"
 	"errors"
 	"github.com/ledgerwatch/log/v3"
 	"fmt"
+	"github.com/gateway-fm/cdk-erigon-lib/kv"
 )
 
+type PromiseWithTransaction struct {
+	Promise *verifier.Promise[*BundleWithTransaction]
+	Tx      kv.RwTx
+}
+
+type BundleWithTransaction struct {
+	Bundle *verifier.VerifierBundle
+	Tx     kv.RwTx
+}
+
 type BatchVerifier struct {
-	tx          kv.RwTx
 	hasExecutor bool
 	forkId      uint64
 	mtxPromises *sync.Mutex
-	promises    []*verifier.Promise[*verifier.VerifierBundle]
+	promises    []*PromiseWithTransaction
 	stop        bool
 	errors      chan error
 }
 
 func NewBatchVerifier(
-	tx kv.RwTx,
 	hasExecutors bool,
 	forkId uint64,
 ) *BatchVerifier {
 	return &BatchVerifier{
-		tx:          tx,
 		hasExecutor: hasExecutors,
 		forkId:      forkId,
 		mtxPromises: &sync.Mutex{},
-		promises:    make([]*verifier.Promise[*verifier.VerifierBundle], 0),
+		promises:    make([]*PromiseWithTransaction, 0),
 		errors:      make(chan error),
 	}
 }
 
-func (bv *BatchVerifier) AddNewCheck(batchNumber, blockNumber uint64, stateRoot common.Hash, counters map[string]int) {
+func (bv *BatchVerifier) AddNewCheck(
+	batchNumber uint64,
+	blockNumber uint64,
+	stateRoot common.Hash,
+	counters map[string]int,
+	tx kv.RwTx,
+) {
 	request := verifier.NewVerifierRequest(batchNumber, blockNumber, bv.forkId, stateRoot, counters)
 
-	var promise *verifier.Promise[*verifier.VerifierBundle]
+	var promise *verifier.Promise[*BundleWithTransaction]
 	if bv.hasExecutor {
 		// todo: implement promise for this
 	} else {
-		promise = bv.nonExecutorPromise(request)
+		promise = bv.syncPromise(request, tx)
 	}
 
-	bv.appendPromise(promise)
+	withTx := &PromiseWithTransaction{
+		Promise: promise,
+		Tx:      tx,
+	}
+
+	bv.appendPromise(withTx)
 }
 
-func (bv *BatchVerifier) appendPromise(promise *verifier.Promise[*verifier.VerifierBundle]) {
+func (bv *BatchVerifier) appendPromise(promise *PromiseWithTransaction) {
 	bv.mtxPromises.Lock()
 	defer bv.mtxPromises.Unlock()
 	bv.promises = append(bv.promises, promise)
 }
 
-func (bv *BatchVerifier) CheckProgress() ([]*verifier.VerifierResponse, error) {
+func (bv *BatchVerifier) CheckProgress() ([]*BundleWithTransaction, error) {
 	bv.mtxPromises.Lock()
 	defer bv.mtxPromises.Unlock()
 
-	var responsees []*verifier.VerifierResponse
+	var responses []*BundleWithTransaction
 
 	// not a stop signal, so we can start to process our promises now
 	processed := 0
 	for idx, promise := range bv.promises {
-		bundle, err := promise.TryGet()
-		if bundle == nil && err == nil {
+		bundleWithTx, err := promise.Promise.TryGet()
+		if bundleWithTx == nil && err == nil {
 			// nothing to process in this promise so we skip it
 			break
 		}
@@ -78,30 +96,39 @@ func (bv *BatchVerifier) CheckProgress() ([]*verifier.VerifierResponse, error) {
 
 			log.Error("error on our end while preparing the verification request, re-queueing the task", "err", err)
 
-			if bundle.Request.IsOverdue() {
+			if bundleWithTx == nil {
+				// we can't proceed here until this promise is attempted again
+				break
+			}
+
+			if bundleWithTx.Bundle.Request.IsOverdue() {
 				// signal an error, the caller can check on this and stop the process if needs be
-				return nil, fmt.Errorf("error: batch %d couldn't be processed in 30 minutes", bundle.Request.BatchNumber)
+				return nil, fmt.Errorf("error: batch %d couldn't be processed in 30 minutes", bundleWithTx.Bundle.Request.BatchNumber)
 			}
 
 			// re-queue the task - it should be safe to replace the index of the slice here as we only add to it
-			// and this watcher process is the only process that removes from it
-			bv.promises[idx] = verifier.NewPromise[*verifier.VerifierBundle](promise.Task())
+			if bv.hasExecutor {
+				// todo: implement promise for this
+			} else {
+				prom := bv.syncPromise(bundleWithTx.Bundle.Request, bundleWithTx.Tx)
+				bv.promises[idx] = &PromiseWithTransaction{
+					Promise: prom,
+					Tx:      bundleWithTx.Tx,
+				}
+			}
 
 			// break now as we know we can't proceed here until this promise is attempted again
 			break
 		}
 
-		response := bundle.Response
-		if response.Valid {
-			processed++
-			responsees = append(responsees, response)
-		}
+		processed++
+		responses = append(responses, bundleWithTx)
 	}
 
 	// remove processed promises from the list
 	bv.removeProcessedPromises(processed)
 
-	return responsees, nil
+	return responses, nil
 }
 
 func (bv *BatchVerifier) removeProcessedPromises(processed int) {
@@ -110,15 +137,15 @@ func (bv *BatchVerifier) removeProcessedPromises(processed int) {
 	}
 
 	if processed == len(bv.promises) {
-		bv.promises = make([]*verifier.Promise[*verifier.VerifierBundle], 0)
+		bv.promises = make([]*PromiseWithTransaction, 0)
 		return
 	}
 
 	bv.promises = bv.promises[processed:]
 }
 
-func (bv *BatchVerifier) nonExecutorPromise(request *verifier.VerifierRequest) *verifier.Promise[*verifier.VerifierBundle] {
-	return verifier.NewPromiseSync[*verifier.VerifierBundle](func() (*verifier.VerifierBundle, error) {
+func (bv *BatchVerifier) syncPromise(request *verifier.VerifierRequest, tx kv.RwTx) *verifier.Promise[*BundleWithTransaction] {
+	return verifier.NewPromiseSync[*BundleWithTransaction](func() (*BundleWithTransaction, error) {
 		response := &verifier.VerifierResponse{
 			BatchNumber:      request.BatchNumber,
 			BlockNumber:      request.BlockNumber,
@@ -129,6 +156,10 @@ func (bv *BatchVerifier) nonExecutorPromise(request *verifier.VerifierRequest) *
 			Error:            nil,
 		}
 		bundle := verifier.NewVerifierBundle(request, response)
-		return bundle, nil
+		withTx := &BundleWithTransaction{
+			Bundle: bundle,
+			Tx:     tx,
+		}
+		return withTx, nil
 	})
 }
