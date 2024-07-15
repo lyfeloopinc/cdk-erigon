@@ -489,3 +489,34 @@ func (bdc *BlockDataChecker) AddTransactionData(txL2Data []byte) bool {
 
 	return false
 }
+
+func checkStreamWriterForUpdates(
+	logPrefix string,
+	tx kv.Tx,
+	streamWriter *SequencerBatchStreamWriter,
+	u stagedsync.Unwinder,
+) (bool, error) {
+	committed, err := streamWriter.CheckAndCommitUpdates()
+	if err != nil {
+		return false, err
+	}
+	for _, commit := range committed {
+		if !commit.Valid {
+			unwindTo := commit.BlockNumber - 1
+
+			// for unwind we supply the block number X-1 of the block we want to remove, but supply the hash of the block
+			// causing the unwind.
+			unwindHeader := rawdb.ReadHeaderByNumber(tx, commit.BlockNumber)
+			if unwindHeader == nil {
+				return false, fmt.Errorf("could not find header for block %d", commit.BlockNumber)
+			}
+
+			log.Warn(fmt.Sprintf("[%s] Block is invalid - rolling back to block", logPrefix), "badBlock", commit.BlockNumber, "unwindTo", unwindTo, "root", unwindHeader.Root)
+
+			u.UnwindTo(unwindTo, unwindHeader.Hash())
+			return true, nil
+		}
+	}
+
+	return false, nil
+}

@@ -48,23 +48,16 @@ func (sbc *SequencerBatchStreamWriter) writeBlockDetails(verifiedBundles []*Bund
 	if !sbc.hasExecutors {
 		for _, bundle := range verifiedBundles {
 			response := bundle.Bundle.Response
-			err := sbc.sdb.hermezDb.WriteBatchCounters(response.BatchNumber, response.OriginalCounters)
-			if err != nil {
-				return written, err
-			}
 
-			err = sbc.sdb.hermezDb.WriteIsBatchPartiallyProcessed(response.BatchNumber)
-			if err != nil {
-				return written, err
-			}
+			if response.Valid {
+				if err := sbc.streamServer.WriteBlockToStream(sbc.logPrefix, sbc.sdb.tx, sbc.sdb.hermezDb, response.BatchNumber, sbc.lastBatch, response.BlockNumber); err != nil {
+					return written, err
+				}
 
-			if err = sbc.streamServer.WriteBlockToStream(sbc.logPrefix, sbc.sdb.tx, sbc.sdb.hermezDb, response.BatchNumber, sbc.lastBatch, response.BlockNumber); err != nil {
-				return written, err
+				// once we have handled the very first block we can update the last batch to be the current batch safely so that
+				// we don't keep adding batch bookmarks in between blocks
+				sbc.lastBatch = response.BatchNumber
 			}
-
-			// once we have handled the very first block we can update the last batch to be the current batch safely so that
-			// we don't keep adding batch bookmarks in between blocks
-			sbc.lastBatch = response.BatchNumber
 
 			status := BlockStatus{
 				BlockNumber: response.BlockNumber,

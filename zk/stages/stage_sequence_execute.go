@@ -251,7 +251,7 @@ func SpawnSequencingStage(
 	}
 
 	batchVerifier := NewBatchVerifier(hasExecutorForThisBatch, forkId)
-	streamWriter := SequencerBatchStreamWriter{
+	streamWriter := &SequencerBatchStreamWriter{
 		ctx:           ctx,
 		db:            cfg.db,
 		logPrefix:     logPrefix,
@@ -269,21 +269,7 @@ func SpawnSequencingStage(
 
 	var block *types.Block
 	var thisBlockNumber uint64
-	lastTx := rootTx
-	openTransactions := make(map[uint64]kv.RwTx)
-	goodBlockHeight := executionAt
-LOOP_BLOCKS:
 	for blockNumber := executionAt; runLoopBlocks; blockNumber++ {
-		// stack the transaction so that we can roll this back later if we need to and keep the previous
-		// state changes in-tact
-		innerTx, err := cfg.db.BeginNestedRw(ctx, lastTx.UnderlyingTx())
-		if err != nil {
-			return err
-		}
-		defer innerTx.Rollback()
-		sdb.SetTx(innerTx)
-		openTransactions[blockNumber+1] = innerTx
-
 		if l1Recovery {
 			decodedBlocksIndex := blockNumber - executionAt
 			if decodedBlocksIndex == decodedBlocksSize {
@@ -313,7 +299,7 @@ LOOP_BLOCKS:
 			addedReceipts = []*types.Receipt{}
 			addedExecutionResults = []*core.ExecutionResult{}
 			effectiveGases = []uint8{}
-			header, parentBlock, err = prepareHeader(innerTx, blockNumber, deltaTimestamp, limboHeaderTimestamp, forkId, nextBatchData.Coinbase)
+			header, parentBlock, err = prepareHeader(rootTx, blockNumber, deltaTimestamp, limboHeaderTimestamp, forkId, nextBatchData.Coinbase)
 			if err != nil {
 				return err
 			}
@@ -569,34 +555,47 @@ LOOP_BLOCKS:
 
 		log.Info(fmt.Sprintf("[%s] Finish block %d with %d transactions...", logPrefix, thisBlockNumber, len(addedTransactions)))
 
-		// add a check to the verifier and also check for responses
-		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), innerTx)
-
-		// check for new responses from the verifier
-		committed, err := streamWriter.CheckAndCommitUpdates()
+		err = sdb.hermezDb.WriteBatchCounters(thisBatch, batchCounters.CombineCollectorsNoChanges().UsedAsMap())
 		if err != nil {
 			return err
 		}
-		for _, commit := range committed {
-			if commit.Valid {
-				goodBlockHeight = commit.BlockNumber
-				//if err := tmpTx.Commit(); err != nil {
-				//	return err
-				//}
-				log.Info(fmt.Sprintf("[%s] Block is valid and will be committed", logPrefix), "block", commit.BlockNumber)
-			} else {
-				openTransactions[commit.BlockNumber].Rollback()
-				log.Info(fmt.Sprintf("[%s] Block is invalid - rolling back this block", logPrefix), "block", commit.BlockNumber)
-				break LOOP_BLOCKS
-			}
+
+		err = sdb.hermezDb.WriteIsBatchPartiallyProcessed(thisBatch)
+		if err != nil {
+			return err
 		}
 
-		// get ready for the next level of nesting
-		lastTx = innerTx
+		if err = rootTx.Commit(); err != nil {
+			return err
+		}
+		rootTx, err = cfg.db.BeginRw(ctx)
+		if err != nil {
+			return err
+		}
+		defer rootTx.Rollback()
+		sdb.SetTx(rootTx)
+
+		// add a check to the verifier and also check for responses
+		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), rootTx)
+
+		// check for new responses from the verifier
+		needsUnwind, err := checkStreamWriterForUpdates(logPrefix, sdb.tx, streamWriter, u)
+		if err != nil {
+			return err
+		}
+		if needsUnwind {
+			return nil
+		}
 	}
 
-	finalGoodTx := openTransactions[goodBlockHeight]
-	sdb.SetTx(finalGoodTx)
+	batchVerifier.WaitForFinish()
+	needsUnwind, err := checkStreamWriterForUpdates(logPrefix, sdb.tx, streamWriter, u)
+	if err != nil {
+		return err
+	}
+	if needsUnwind {
+		return nil
+	}
 
 	l1InfoIndex, err := sdb.hermezDb.GetBlockL1InfoTreeIndex(lastStartedBn)
 	if err != nil {
@@ -618,7 +617,7 @@ LOOP_BLOCKS:
 	}
 
 	// Local Exit Root (ler): read s/c storage every batch to store the LER for the highest block in the batch
-	ler, err := utils.GetBatchLocalExitRootFromSCStorage(thisBatch, sdb.hermezDb.HermezDbReader, lastTx)
+	ler, err := utils.GetBatchLocalExitRootFromSCStorage(thisBatch, sdb.hermezDb.HermezDbReader, rootTx)
 	if err != nil {
 		return err
 	}
@@ -630,20 +629,12 @@ LOOP_BLOCKS:
 	log.Info(fmt.Sprintf("[%s] Finish batch %d...", logPrefix, thisBatch))
 
 	if !hasExecutorForThisBatch {
-		if err = datastreamServer.WriteBatchEnd(logPrefix, finalGoodTx, sdb.hermezDb, thisBatch, lastBatch, block.Root()); err != nil {
+		if err = datastreamServer.WriteBatchEnd(logPrefix, rootTx, sdb.hermezDb, thisBatch, lastBatch, block.Root()); err != nil {
 			return err
 		}
 	}
 
 	if freshTx {
-		// from the previous execution to the good block height we need to commit the
-		// transactions in reverse order
-		for i := goodBlockHeight; i > executionAt; i-- {
-			if err := openTransactions[i].Commit(); err != nil {
-				return err
-			}
-		}
-
 		if err = rootTx.Commit(); err != nil {
 			return err
 		}

@@ -8,6 +8,7 @@ import (
 	"github.com/ledgerwatch/log/v3"
 	"fmt"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
+	"math/rand"
 )
 
 type PromiseWithTransaction struct {
@@ -27,6 +28,9 @@ type BatchVerifier struct {
 	promises    []*PromiseWithTransaction
 	stop        bool
 	errors      chan error
+	requests    uint32
+	mtxRequests *sync.Mutex
+	finishCond  *sync.Cond
 }
 
 func NewBatchVerifier(
@@ -39,6 +43,8 @@ func NewBatchVerifier(
 		mtxPromises: &sync.Mutex{},
 		promises:    make([]*PromiseWithTransaction, 0),
 		errors:      make(chan error),
+		mtxRequests: &sync.Mutex{},
+		finishCond:  sync.NewCond(&sync.Mutex{}),
 	}
 }
 
@@ -63,7 +69,36 @@ func (bv *BatchVerifier) AddNewCheck(
 		Tx:      tx,
 	}
 
+	bv.addRequestCount()
 	bv.appendPromise(withTx)
+}
+
+func (bv *BatchVerifier) addRequestCount() {
+	bv.mtxRequests.Lock()
+	defer bv.mtxRequests.Unlock()
+	bv.requests++
+}
+
+func (bv *BatchVerifier) decreaseRequestCount() {
+	bv.mtxRequests.Lock()
+	defer bv.mtxRequests.Unlock()
+	bv.requests--
+
+	if bv.requests == 0 {
+		bv.finishCond.L.Lock()
+		bv.finishCond.Broadcast()
+		bv.finishCond.L.Unlock()
+	}
+}
+
+func (bv *BatchVerifier) WaitForFinish() {
+	bv.mtxRequests.Lock()
+	defer bv.mtxRequests.Unlock()
+	for bv.requests > 0 {
+		bv.finishCond.L.Lock()
+		bv.finishCond.Wait()
+		bv.finishCond.L.Unlock()
+	}
 }
 
 func (bv *BatchVerifier) appendPromise(promise *PromiseWithTransaction) {
@@ -127,6 +162,7 @@ func (bv *BatchVerifier) CheckProgress() ([]*BundleWithTransaction, error) {
 
 	// remove processed promises from the list
 	bv.removeProcessedPromises(processed)
+	bv.decreaseRequestCount()
 
 	return responses, nil
 }
@@ -145,11 +181,18 @@ func (bv *BatchVerifier) removeProcessedPromises(processed int) {
 }
 
 func (bv *BatchVerifier) syncPromise(request *verifier.VerifierRequest, tx kv.RwTx) *verifier.Promise[*BundleWithTransaction] {
+	// simulate a die roll to determine if this is a good batch or not
+	// 1 in 6 chance of being a bad batch
+	valid := true
+	if rand.Intn(6) == 0 {
+		valid = false
+	}
+
 	return verifier.NewPromiseSync[*BundleWithTransaction](func() (*BundleWithTransaction, error) {
 		response := &verifier.VerifierResponse{
 			BatchNumber:      request.BatchNumber,
 			BlockNumber:      request.BlockNumber,
-			Valid:            true,
+			Valid:            valid,
 			OriginalCounters: request.Counters,
 			Witness:          nil,
 			ExecutorResponse: nil,
