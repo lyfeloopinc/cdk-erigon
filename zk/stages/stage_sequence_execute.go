@@ -259,6 +259,7 @@ func SpawnSequencingStage(
 		sdb:           sdb,
 		streamServer:  datastreamServer,
 		hasExecutors:  hasExecutorForThisBatch,
+		lastBatch:     lastBatch,
 	}
 
 	blockDataSizeChecker := NewBlockDataChecker()
@@ -269,6 +270,9 @@ func SpawnSequencingStage(
 	var block *types.Block
 	var thisBlockNumber uint64
 	lastTx := rootTx
+	openTransactions := make(map[uint64]kv.RwTx)
+	goodBlockHeight := executionAt
+LOOP_BLOCKS:
 	for blockNumber := executionAt; runLoopBlocks; blockNumber++ {
 		// stack the transaction so that we can roll this back later if we need to and keep the previous
 		// state changes in-tact
@@ -276,7 +280,9 @@ func SpawnSequencingStage(
 		if err != nil {
 			return err
 		}
+		defer innerTx.Rollback()
 		sdb.SetTx(innerTx)
+		openTransactions[blockNumber+1] = innerTx
 
 		if l1Recovery {
 			decodedBlocksIndex := blockNumber - executionAt
@@ -567,14 +573,30 @@ func SpawnSequencingStage(
 		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), innerTx)
 
 		// check for new responses from the verifier
-		if err := streamWriter.CheckAndCommitUpdates(lastBatch); err != nil {
-			innerTx.Rollback()
-			break
+		committed, err := streamWriter.CheckAndCommitUpdates()
+		if err != nil {
+			return err
+		}
+		for _, commit := range committed {
+			if commit.Valid {
+				goodBlockHeight = commit.BlockNumber
+				//if err := tmpTx.Commit(); err != nil {
+				//	return err
+				//}
+				log.Info(fmt.Sprintf("[%s] Block is valid and will be committed", logPrefix), "block", commit.BlockNumber)
+			} else {
+				openTransactions[commit.BlockNumber].Rollback()
+				log.Info(fmt.Sprintf("[%s] Block is invalid - rolling back this block", logPrefix), "block", commit.BlockNumber)
+				break LOOP_BLOCKS
+			}
 		}
 
 		// get ready for the next level of nesting
 		lastTx = innerTx
 	}
+
+	finalGoodTx := openTransactions[goodBlockHeight]
+	sdb.SetTx(finalGoodTx)
 
 	l1InfoIndex, err := sdb.hermezDb.GetBlockL1InfoTreeIndex(lastStartedBn)
 	if err != nil {
@@ -608,13 +630,21 @@ func SpawnSequencingStage(
 	log.Info(fmt.Sprintf("[%s] Finish batch %d...", logPrefix, thisBatch))
 
 	if !hasExecutorForThisBatch {
-		if err = datastreamServer.WriteBatchEnd(logPrefix, lastTx, sdb.hermezDb, thisBatch, lastBatch, block.Root()); err != nil {
+		if err = datastreamServer.WriteBatchEnd(logPrefix, finalGoodTx, sdb.hermezDb, thisBatch, lastBatch, block.Root()); err != nil {
 			return err
 		}
 	}
 
 	if freshTx {
-		if err = lastTx.Commit(); err != nil {
+		// from the previous execution to the good block height we need to commit the
+		// transactions in reverse order
+		for i := goodBlockHeight; i > executionAt; i-- {
+			if err := openTransactions[i].Commit(); err != nil {
+				return err
+			}
+		}
+
+		if err = rootTx.Commit(); err != nil {
 			return err
 		}
 	}
