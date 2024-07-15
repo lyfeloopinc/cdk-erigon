@@ -520,3 +520,44 @@ func checkStreamWriterForUpdates(
 
 	return false, nil
 }
+
+func runBatchLastSteps(
+	logPrefix string,
+	sdb *stageDb,
+	thisBatch uint64,
+	lastStartedBn uint64,
+	batchCounters *vm.BatchCounterCollector,
+) error {
+	l1InfoIndex, err := sdb.hermezDb.GetBlockL1InfoTreeIndex(lastStartedBn)
+	if err != nil {
+		return err
+	}
+
+	counters, err := batchCounters.CombineCollectors(l1InfoIndex != 0)
+	if err != nil {
+		return err
+	}
+
+	log.Info(fmt.Sprintf("[%s] counters consumed", logPrefix), "batch", thisBatch, "counts", counters.UsedAsString())
+
+	if err = sdb.hermezDb.WriteBatchCounters(thisBatch, counters.UsedAsMap()); err != nil {
+		return err
+	}
+	if err := sdb.hermezDb.DeleteIsBatchPartiallyProcessed(thisBatch); err != nil {
+		return err
+	}
+
+	// Local Exit Root (ler): read s/c storage every batch to store the LER for the highest block in the batch
+	ler, err := utils.GetBatchLocalExitRootFromSCStorage(thisBatch, sdb.hermezDb.HermezDbReader, sdb.tx)
+	if err != nil {
+		return err
+	}
+	// write ler to hermezdb
+	if err = sdb.hermezDb.WriteLocalExitRootForBatchNo(thisBatch, ler); err != nil {
+		return err
+	}
+
+	log.Info(fmt.Sprintf("[%s] Finish batch %d...", logPrefix, thisBatch))
+
+	return nil
+}
