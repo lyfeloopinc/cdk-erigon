@@ -304,7 +304,7 @@ func SpawnSequencingStage(
 		log.Info(fmt.Sprintf("[%s] Continuing unfinished batch %d from block %d", logPrefix, thisBatch, executionAt))
 	}
 
-	batchVerifier := NewBatchVerifier(hasExecutorForThisBatch, forkId)
+	batchVerifier := NewBatchVerifier(cfg.zk, hasExecutorForThisBatch, cfg.legacyVerifier, forkId)
 	streamWriter := &SequencerBatchStreamWriter{
 		ctx:           ctx,
 		db:            cfg.db,
@@ -323,6 +323,8 @@ func SpawnSequencingStage(
 
 	var block *types.Block
 	var thisBlockNumber uint64
+	var builtBlocks []uint64
+
 	for blockNumber := executionAt; runLoopBlocks; blockNumber++ {
 		if l1Recovery {
 			decodedBlocksIndex := blockNumber - executionAt
@@ -630,10 +632,11 @@ func SpawnSequencingStage(
 		sdb.SetTx(rootTx)
 
 		// add a check to the verifier and also check for responses
-		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), rootTx)
+		builtBlocks = append(builtBlocks, thisBlockNumber)
+		batchVerifier.AddNewCheck(thisBatch, thisBlockNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), builtBlocks)
 
 		// check for new responses from the verifier
-		needsUnwind, err := checkStreamWriterForUpdates(logPrefix, sdb.tx, streamWriter, u)
+		needsUnwind, _, err := checkStreamWriterForUpdates(logPrefix, sdb.tx, streamWriter, u)
 		if err != nil {
 			return err
 		}
@@ -654,23 +657,26 @@ func SpawnSequencingStage(
 		}
 	}
 
-	batchVerifier.WaitForFinish()
-	needsUnwind, err := checkStreamWriterForUpdates(logPrefix, sdb.tx, streamWriter, u)
-	if err != nil {
-		return err
-	}
-	if needsUnwind {
-		return nil
+	for {
+		needsUnwind, remaining, err := checkStreamWriterForUpdates(logPrefix, sdb.tx, streamWriter, u)
+		if err != nil {
+			return err
+		}
+		if needsUnwind {
+			return nil
+		}
+		if remaining == 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if err = runBatchLastSteps(logPrefix, sdb, thisBatch, lastStartedBn, batchCounters); err != nil {
 		return err
 	}
 
-	if !hasExecutorForThisBatch {
-		if err = datastreamServer.WriteBatchEnd(logPrefix, rootTx, sdb.hermezDb, thisBatch, lastBatch, block.Root()); err != nil {
-			return err
-		}
+	if err = datastreamServer.WriteBatchEnd(logPrefix, rootTx, sdb.hermezDb, thisBatch, lastBatch, block.Root()); err != nil {
+		return err
 	}
 
 	if freshTx {

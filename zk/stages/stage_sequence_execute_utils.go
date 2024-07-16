@@ -39,6 +39,7 @@ import (
 	zktypes "github.com/ledgerwatch/erigon/zk/types"
 	"github.com/ledgerwatch/erigon/zk/utils"
 	"github.com/ledgerwatch/log/v3"
+	verifier "github.com/ledgerwatch/erigon/zk/legacy_executor_verifier"
 )
 
 const (
@@ -84,6 +85,8 @@ type SequenceBlockCfg struct {
 
 	txPool   *txpool.TxPool
 	txPoolDb kv.RwDB
+
+	legacyVerifier *verifier.LegacyExecutorVerifier
 }
 
 func StageSequenceBlocksCfg(
@@ -109,28 +112,30 @@ func StageSequenceBlocksCfg(
 
 	txPool *txpool.TxPool,
 	txPoolDb kv.RwDB,
+	legacyVerifier *verifier.LegacyExecutorVerifier,
 ) SequenceBlockCfg {
 	return SequenceBlockCfg{
-		db:            db,
-		prune:         pm,
-		batchSize:     batchSize,
-		changeSetHook: changeSetHook,
-		chainConfig:   chainConfig,
-		engine:        engine,
-		zkVmConfig:    vmConfig,
-		dirs:          dirs,
-		accumulator:   accumulator,
-		stateStream:   stateStream,
-		badBlockHalt:  badBlockHalt,
-		blockReader:   blockReader,
-		genesis:       genesis,
-		historyV3:     historyV3,
-		syncCfg:       syncCfg,
-		agg:           agg,
-		stream:        stream,
-		zk:            zk,
-		txPool:        txPool,
-		txPoolDb:      txPoolDb,
+		db:             db,
+		prune:          pm,
+		batchSize:      batchSize,
+		changeSetHook:  changeSetHook,
+		chainConfig:    chainConfig,
+		engine:         engine,
+		zkVmConfig:     vmConfig,
+		dirs:           dirs,
+		accumulator:    accumulator,
+		stateStream:    stateStream,
+		badBlockHalt:   badBlockHalt,
+		blockReader:    blockReader,
+		genesis:        genesis,
+		historyV3:      historyV3,
+		syncCfg:        syncCfg,
+		agg:            agg,
+		stream:         stream,
+		zk:             zk,
+		txPool:         txPool,
+		txPoolDb:       txPoolDb,
+		legacyVerifier: legacyVerifier,
 	}
 }
 
@@ -495,10 +500,10 @@ func checkStreamWriterForUpdates(
 	tx kv.Tx,
 	streamWriter *SequencerBatchStreamWriter,
 	u stagedsync.Unwinder,
-) (bool, error) {
-	committed, err := streamWriter.CheckAndCommitUpdates()
+) (bool, int, error) {
+	committed, remaining, err := streamWriter.CheckAndCommitUpdates()
 	if err != nil {
-		return false, err
+		return false, remaining, err
 	}
 	for _, commit := range committed {
 		if !commit.Valid {
@@ -508,17 +513,17 @@ func checkStreamWriterForUpdates(
 			// causing the unwind.
 			unwindHeader := rawdb.ReadHeaderByNumber(tx, commit.BlockNumber)
 			if unwindHeader == nil {
-				return false, fmt.Errorf("could not find header for block %d", commit.BlockNumber)
+				return false, 0, fmt.Errorf("could not find header for block %d", commit.BlockNumber)
 			}
 
 			log.Warn(fmt.Sprintf("[%s] Block is invalid - rolling back to block", logPrefix), "badBlock", commit.BlockNumber, "unwindTo", unwindTo, "root", unwindHeader.Root)
 
 			u.UnwindTo(unwindTo, unwindHeader.Hash())
-			return true, nil
+			return true, 0, nil
 		}
 	}
 
-	return false, nil
+	return false, remaining, nil
 }
 
 func runBatchLastSteps(

@@ -151,7 +151,7 @@ func (v *LegacyExecutorVerifier) VerifySync(tx kv.Tx, request *VerifierRequest, 
 		L1InfoTreeMinTimestamps: l1InfoTreeMinTimestamps,
 	}
 
-	e := v.getNextOnlineAvailableExecutor()
+	e := v.GetNextOnlineAvailableExecutor()
 	if e == nil {
 		return ErrNoExecutorAvailable
 	}
@@ -175,7 +175,7 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 	promise := NewPromise[*VerifierBundle](func() (*VerifierBundle, error) {
 		verifierBundle := NewVerifierBundle(request, nil)
 
-		e := v.getNextOnlineAvailableExecutor()
+		e := v.GetNextOnlineAvailableExecutor()
 		if e == nil {
 			return verifierBundle, ErrNoExecutorAvailable
 		}
@@ -298,6 +298,117 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 	return promise
 }
 
+type VerifierBundleWithBlocks struct {
+	Blocks []uint64
+	Bundle *VerifierBundle
+}
+
+func (v *LegacyExecutorVerifier) CreateAsyncPromise(
+	request *VerifierRequest,
+	blockNumbers []uint64,
+) *Promise[*VerifierBundleWithBlocks] {
+	// eager promise will do the work as soon as called in a goroutine, then we can retrieve the result later
+	// ProcessResultsSequentiallyUnsafe relies on the fact that this function returns ALWAYS non-verifierBundle and error. The only exception is the case when verifications has been canceled. Only then the verifierBundle can be nil
+	promise := NewPromise[*VerifierBundleWithBlocks](func() (*VerifierBundleWithBlocks, error) {
+		verifierBundle := NewVerifierBundle(request, nil)
+		bundleWithBlocks := &VerifierBundleWithBlocks{
+			Blocks: blockNumbers,
+			Bundle: verifierBundle,
+		}
+
+		e := v.GetNextOnlineAvailableExecutor()
+		if e == nil {
+			return bundleWithBlocks, ErrNoExecutorAvailable
+		}
+
+		e.AquireAccess()
+		defer e.ReleaseAccess()
+		if v.cancelAllVerifications.Load() {
+			return nil, ErrPromiseCancelled
+		}
+
+		var err error
+		ctx := context.Background()
+		// mapmutation has some issue with us not having a quit channel on the context call to `Done` so
+		// here we're creating a cancelable context and just deferring the cancel
+		innerCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		tx, err := v.db.BeginRo(innerCtx)
+		if err != nil {
+			return bundleWithBlocks, err
+		}
+		defer tx.Rollback()
+
+		hermezDb := hermez_db.NewHermezDbReader(tx)
+
+		l1InfoTreeMinTimestamps := make(map[uint64]uint64)
+		streamBytes, err := v.GetStreamBytes(request.BatchNumber, tx, blockNumbers, hermezDb, l1InfoTreeMinTimestamps, nil)
+		if err != nil {
+			return bundleWithBlocks, err
+		}
+
+		witness, err := v.witnessGenerator.GetWitnessByBlockRange(tx, ctx, blockNumbers[0], blockNumbers[len(blockNumbers)-1], false, v.cfg.WitnessFull)
+		if err != nil {
+			return nil, err
+		}
+
+		log.Debug("witness generated", "data", hex.EncodeToString(witness))
+
+		// now we need to figure out the timestamp limit for this payload.  It must be:
+		// timestampLimit >= currentTimestamp (from batch pre-state) + deltaTimestamp
+		// so to ensure we have a good value we can take the timestamp of the last block in the batch
+		// and just add 5 minutes
+		lastBlock, err := rawdb.ReadBlockByNumber(tx, blockNumbers[len(blockNumbers)-1])
+		if err != nil {
+			return bundleWithBlocks, err
+		}
+
+		// executor is perfectly happy with just an empty hash here
+		oldAccInputHash := common.HexToHash("0x0")
+		timestampLimit := lastBlock.Time()
+		payload := &Payload{
+			Witness:                 witness,
+			DataStream:              streamBytes,
+			Coinbase:                v.cfg.AddressSequencer.String(),
+			OldAccInputHash:         oldAccInputHash.Bytes(),
+			L1InfoRoot:              nil,
+			TimestampLimit:          timestampLimit,
+			ForcedBlockhashL1:       []byte{0},
+			ContextId:               strconv.FormatUint(request.BatchNumber, 10),
+			L1InfoTreeMinTimestamps: l1InfoTreeMinTimestamps,
+		}
+
+		previousBlock, err := rawdb.ReadBlockByNumber(tx, blockNumbers[0]-1)
+		if err != nil {
+			return bundleWithBlocks, err
+		}
+
+		ok, executorResponse, executorErr := e.Verify(payload, request, previousBlock.Root())
+		if executorErr != nil {
+			if errors.Is(executorErr, ErrExecutorStateRootMismatch) {
+				log.Error("[Verifier] State root mismatch detected", "err", executorErr)
+			} else if errors.Is(executorErr, ErrExecutorUnknownError) {
+				log.Error("[Verifier] Unexpected error found from executor", "err", executorErr)
+			} else {
+				log.Error("[Verifier] Error", "err", executorErr)
+			}
+		}
+
+		verifierBundle.Response = &VerifierResponse{
+			BatchNumber:      request.BatchNumber,
+			BlockNumber:      request.BlockNumber,
+			Valid:            ok,
+			Witness:          witness,
+			ExecutorResponse: executorResponse,
+			Error:            executorErr,
+		}
+		return bundleWithBlocks, nil
+	})
+
+	return promise
+}
+
 func (v *LegacyExecutorVerifier) checkAndWriteToStream(tx kv.Tx, hdb *hermez_db.HermezDbReader, newBatch uint64) error {
 	v.responsesMtx.Lock()
 	defer v.responsesMtx.Unlock()
@@ -380,9 +491,6 @@ func (v *LegacyExecutorVerifier) ProcessResultsSequentiallyUnsafe(tx kv.RwTx) ([
 		}
 	}
 
-	// leave only non-processed promises
-	// v.promises = v.promises[len(results):]
-
 	return results, nil
 }
 
@@ -440,7 +548,7 @@ func (v *LegacyExecutorVerifier) WriteBatchToStream(batchNumber uint64, hdb *her
 	return nil
 }
 
-func (v *LegacyExecutorVerifier) getNextOnlineAvailableExecutor() ILegacyExecutor {
+func (v *LegacyExecutorVerifier) GetNextOnlineAvailableExecutor() ILegacyExecutor {
 	var exec ILegacyExecutor
 
 	// TODO: find executors with spare capacity

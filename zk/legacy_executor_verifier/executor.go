@@ -229,12 +229,13 @@ func (e *Executor) Verify(p *Payload, request *VerifierRequest, oldStateRoot com
 		"match", match,
 		"grpcUrl", e.grpcUrl,
 		"batch", request.BatchNumber,
+		"blocks-count", len(resp.BlockResponses),
 		"counters", counters,
 		"exec-root", common.BytesToHash(resp.NewStateRoot),
 		"our-root", request.StateRoot,
 		"exec-old-root", common.BytesToHash(resp.OldStateRoot),
 		"our-old-root", oldStateRoot,
-		"blocks-count", len(resp.BlockResponses))
+	)
 
 	for addr, all := range resp.ReadWriteAddresses {
 		log.Debug("executor result",

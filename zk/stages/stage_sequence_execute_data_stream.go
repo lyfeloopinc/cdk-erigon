@@ -4,6 +4,7 @@ import (
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/zk/datastream/server"
 	"context"
+	verifier "github.com/ledgerwatch/erigon/zk/legacy_executor_verifier"
 )
 
 type SequencerBatchStreamWriter struct {
@@ -15,7 +16,6 @@ type SequencerBatchStreamWriter struct {
 	streamServer  *server.DataStreamServer
 	hasExecutors  bool
 	lastBatch     uint64
-	//overlay       *memdb.MemoryMutation
 }
 
 type BlockStatus struct {
@@ -24,53 +24,51 @@ type BlockStatus struct {
 	Error       error
 }
 
-func (sbc *SequencerBatchStreamWriter) CheckAndCommitUpdates() ([]BlockStatus, error) {
+func (sbc *SequencerBatchStreamWriter) CheckAndCommitUpdates() ([]BlockStatus, int, error) {
 	var written []BlockStatus
-	responses, err := sbc.batchVerifier.CheckProgress()
+	responses, remaining, err := sbc.batchVerifier.CheckProgress()
 	if err != nil {
-		return written, err
+		return written, remaining, err
 	}
 
 	if len(responses) == 0 {
-		return written, nil
+		return written, remaining, nil
 	}
 
 	written, err = sbc.writeBlockDetails(responses)
 	if err != nil {
-		return written, err
+		return written, remaining, err
 	}
 
-	return written, nil
+	return written, remaining, nil
 }
 
-func (sbc *SequencerBatchStreamWriter) writeBlockDetails(verifiedBundles []*BundleWithTransaction) ([]BlockStatus, error) {
+func (sbc *SequencerBatchStreamWriter) writeBlockDetails(verifiedBundles []*verifier.VerifierBundle) ([]BlockStatus, error) {
 	var written []BlockStatus
-	if !sbc.hasExecutors {
-		for _, bundle := range verifiedBundles {
-			response := bundle.Bundle.Response
+	for _, bundle := range verifiedBundles {
+		response := bundle.Response
 
-			if response.Valid {
-				if err := sbc.streamServer.WriteBlockToStream(sbc.logPrefix, sbc.sdb.tx, sbc.sdb.hermezDb, response.BatchNumber, sbc.lastBatch, response.BlockNumber); err != nil {
-					return written, err
-				}
-
-				// once we have handled the very first block we can update the last batch to be the current batch safely so that
-				// we don't keep adding batch bookmarks in between blocks
-				sbc.lastBatch = response.BatchNumber
+		if response.Valid {
+			if err := sbc.streamServer.WriteBlockToStream(sbc.logPrefix, sbc.sdb.tx, sbc.sdb.hermezDb, response.BatchNumber, sbc.lastBatch, response.BlockNumber); err != nil {
+				return written, err
 			}
 
-			status := BlockStatus{
-				BlockNumber: response.BlockNumber,
-				Valid:       response.Valid,
-				Error:       response.Error,
-			}
+			// once we have handled the very first block we can update the last batch to be the current batch safely so that
+			// we don't keep adding batch bookmarks in between blocks
+			sbc.lastBatch = response.BatchNumber
+		}
 
-			written = append(written, status)
+		status := BlockStatus{
+			BlockNumber: response.BlockNumber,
+			Valid:       response.Valid,
+			Error:       response.Error,
+		}
 
-			// just break early if there is an invalid response as we don't want to process the remainder anyway
-			if !response.Valid {
-				break
-			}
+		written = append(written, status)
+
+		// just break early if there is an invalid response as we don't want to process the remainder anyway
+		if !response.Valid {
+			break
 		}
 	}
 
