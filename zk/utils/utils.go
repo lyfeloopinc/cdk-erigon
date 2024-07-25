@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 
+	"github.com/gateway-fm/cdk-erigon-lib/common"
 	libcommon "github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/chain"
@@ -81,7 +82,7 @@ type ForkConfigWriter interface {
 }
 
 type DbReader interface {
-	GetLocalExitRootForBatchNo(batchNo uint64) (libcommon.Hash, error)
+	GetLocalExitRootForBatchNo(batchNo uint64) (common.Hash, error)
 	GetHighestBlockInBatch(batchNo uint64) (uint64, error)
 }
 

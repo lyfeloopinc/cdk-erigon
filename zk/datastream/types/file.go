@@ -3,7 +3,6 @@ package types
 import (
 	"encoding/binary"
 	"fmt"
-
 	"github.com/ledgerwatch/erigon/zk/datastream/proto/github.com/0xPolygonHermez/zkevm-node/state/datastream"
 )
 
@@ -33,9 +32,6 @@ func (f *FileEntry) IsBookmarkBlock() bool {
 	return uint32(f.EntryType) == uint32(datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
 }
 
-func (f *FileEntry) IsL2BlockEnd() bool {
-	return uint32(f.EntryType) == uint32(6) //TODO: fix once it is added in the lib
-}
 func (f *FileEntry) IsL2Block() bool {
 	return uint32(f.EntryType) == uint32(datastream.EntryType_ENTRY_TYPE_L2_BLOCK)
 }
