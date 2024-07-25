@@ -146,11 +146,7 @@ func createBatchStartEntriesProto(
 	var err error
 	var batchStartEntries []DataStreamEntryProto
 
-	batchGapEntriesCount := int(batchGap) - 1
-	if batchGapEntriesCount < 0 {
-		batchGapEntriesCount = 0
-	}
-	entries := NewDataStreamEntries(2 + 3*batchGapEntriesCount + len(gers))
+	entries := NewDataStreamEntries(2 + int(3*(batchGap-1)) + len(gers))
 
 	// if we have a gap of more than 1 batch then we need to write in the batch start and ends for these empty batches
 	if batchGap > 1 {
