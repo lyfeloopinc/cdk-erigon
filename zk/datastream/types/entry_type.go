@@ -9,6 +9,5 @@ var (
 	EntryTypeL2Tx        EntryType = 3
 	EntryTypeBatchEnd    EntryType = 4
 	EntryTypeGerUpdate   EntryType = 5
-	EntryTypeL2BlockEnd  EntryType = 6
 	BookmarkEntryType    EntryType = 176
 )

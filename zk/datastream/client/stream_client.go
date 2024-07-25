@@ -24,11 +24,6 @@ type EntityDefinition struct {
 	Definition reflect.Type
 }
 
-const (
-	versionProto         = 2 // converted to proto
-	versionAddedBlockEnd = 3 // Added block end
-)
-
 type StreamClient struct {
 	ctx          context.Context
 	server       string // Server address to connect IP:port
@@ -46,9 +41,7 @@ type StreamClient struct {
 
 	// Channels
 	batchStartChan chan types.BatchStart
-	batchEndChan   chan types.BatchEnd
 	l2BlockChan    chan types.FullL2Block
-	l2TxChan       chan types.L2TransactionProto
 	gerUpdatesChan chan types.GerUpdate // NB: unused from etrog onwards (forkid 7)
 
 	// keeps track of the latest fork from the stream to assign to l2 blocks
@@ -76,8 +69,7 @@ func NewClient(ctx context.Context, server string, version int, checkTimeout tim
 		version:        version,
 		streamType:     StSequencer,
 		id:             "",
-		batchStartChan: make(chan types.BatchStart, 100),
-		batchEndChan:   make(chan types.BatchEnd, 100),
+		batchStartChan: make(chan types.BatchStart, 1000),
 		l2BlockChan:    make(chan types.FullL2Block, 100000),
 		gerUpdatesChan: make(chan types.GerUpdate, 1000),
 		currentFork:    uint64(latestDownloadedForkId),
@@ -86,21 +78,11 @@ func NewClient(ctx context.Context, server string, version int, checkTimeout tim
 	return c
 }
 
-func (c *StreamClient) IsVersion3() bool {
-	return c.version >= versionAddedBlockEnd
-}
-
 func (c *StreamClient) GetBatchStartChan() chan types.BatchStart {
 	return c.batchStartChan
 }
-func (c *StreamClient) GetBatchEndChan() chan types.BatchEnd {
-	return c.batchEndChan
-}
 func (c *StreamClient) GetL2BlockChan() chan types.FullL2Block {
 	return c.l2BlockChan
-}
-func (c *StreamClient) GetL2TxChan() chan types.L2TransactionProto {
-	return c.l2TxChan
 }
 func (c *StreamClient) GetGerUpdatesChan() chan types.GerUpdate {
 	return c.gerUpdatesChan
@@ -173,6 +155,30 @@ func (c *StreamClient) GetHeader() error {
 	c.Header = *h
 
 	return nil
+}
+
+// sends start command, reads entries until limit reached and sends end command
+func (c *StreamClient) ReadEntries(bookmark *types.BookmarkProto, l2BlocksAmount int) (*[]types.FullL2Block, *[]types.GerUpdate, []types.BookmarkProto, []types.BookmarkProto, uint64, error) {
+	// Get header from server
+	if err := c.GetHeader(); err != nil {
+		return nil, nil, nil, nil, 0, fmt.Errorf("%s get header error: %v", c.id, err)
+	}
+
+	protoBookmark, err := bookmark.Marshal()
+	if err != nil {
+		return nil, nil, nil, nil, 0, fmt.Errorf("failed to marshal bookmark: %v", err)
+	}
+
+	if err := c.initiateDownloadBookmark(protoBookmark); err != nil {
+		return nil, nil, nil, nil, 0, err
+	}
+
+	fullL2Blocks, gerUpates, batchBookmarks, blockBookmarks, entriesRead, err := c.readFullL2Blocks(l2BlocksAmount)
+	if err != nil {
+		return nil, nil, nil, nil, 0, err
+	}
+
+	return fullL2Blocks, gerUpates, batchBookmarks, blockBookmarks, entriesRead, nil
 }
 
 func (c *StreamClient) ExecutePerFile(bookmark *types.BookmarkProto, function func(file *types.FileEntry) error) error {
@@ -319,15 +325,14 @@ LOOP:
 			c.conn.SetReadDeadline(time.Now().Add(c.checkTimeout))
 		}
 
-		fullBlock, batchStart, batchEnd, gerUpdate, batchBookmark, blockBookmark, localErr := c.readFullBlockProto()
+		fullBlock, batchStart, batchEnd, gerUpdates, batchBookmark, blockBookmark, _, _, localErr := c.readFullBlockProto()
 		if localErr != nil {
 			err = localErr
 			break
 		}
-		c.lastWrittenTime.Store(time.Now().UnixNano())
 
 		// skip over bookmarks (but only when fullblock is nil or will miss l2 blocks)
-		if batchBookmark != nil || blockBookmark != nil {
+		if (batchBookmark != nil || blockBookmark != nil) && fullBlock == nil {
 			continue
 		}
 
@@ -335,40 +340,47 @@ LOOP:
 		if batchStart != nil {
 			c.currentFork = (*batchStart).ForkId
 			c.batchStartChan <- *batchStart
+			continue
 		}
 
-		if gerUpdate != nil {
-			c.gerUpdatesChan <- *gerUpdate
+		if gerUpdates != nil {
+			for _, gerUpdate := range *gerUpdates {
+				c.gerUpdatesChan <- gerUpdate
+			}
+		}
+
+		// we could have a scenario where a batch start is immediately followed by a batch end,
+		// so we need to report an error if the batch end is nil, and we have no block to process
+		if fullBlock == nil && batchEnd == nil {
+			return fmt.Errorf("block is nil, batch")
 		}
 
 		if batchEnd != nil {
 			// this check was inside c.readFullBlockProto() but it is better to move it here
-			c.batchEndChan <- *batchEnd
+			if fullBlock == nil {
+				fullBlock = &types.FullL2Block{}
+			}
+			fullBlock.BatchEnd = true
+			fullBlock.LocalExitRoot = batchEnd.LocalExitRoot
 		}
 
 		// ensure the block is assigned the currently known fork
 		if fullBlock != nil {
 			fullBlock.ForkId = c.currentFork
-			log.Trace("writing block to channel", "blockNumber", fullBlock.L2BlockNumber, "batchNumber", fullBlock.BatchNumber)
-			c.l2BlockChan <- *fullBlock
 		}
+
+		c.lastWrittenTime.Store(time.Now().UnixNano())
+		log.Trace("writing block to channel", "blockNumber", fullBlock.L2BlockNumber, "batchNumber", fullBlock.BatchNumber)
+		c.l2BlockChan <- *fullBlock
 	}
 
 	return err
 }
 
-// clar them manually rather than making new ones, because we use the pointers instage batches and hang
 func (c *StreamClient) resetChannels() {
-L:
-	for {
-		select {
-		case <-c.batchStartChan:
-		case <-c.l2BlockChan:
-		case <-c.gerUpdatesChan:
-		default:
-			break L
-		}
-	}
+	c.batchStartChan = make(chan types.BatchStart, 1000)
+	c.l2BlockChan = make(chan types.FullL2Block, 100000)
+	c.gerUpdatesChan = make(chan types.GerUpdate, 1000)
 }
 
 func (c *StreamClient) tryReConnect() error {
@@ -390,116 +402,193 @@ func (c *StreamClient) tryReConnect() error {
 	return err
 }
 
-func (c *StreamClient) readFullBlockProto() (
-	l2Block *types.FullL2Block,
-	batchStart *types.BatchStart,
-	batchEnd *types.BatchEnd,
-	gerUpdate *types.GerUpdate,
-	batchBookmark *types.BookmarkProto,
-	blockBookmark *types.BookmarkProto,
-	err error,
-) {
-	file, err := c.readFileEntry()
-	if err != nil {
-		err = fmt.Errorf("read file entry error: %v", err)
-		return
+// reads a set amount of l2blocks from the server and returns them
+// returns the parsed FullL2Blocks with transactions and the amount of entries read
+func (c *StreamClient) readFullL2Blocks(l2BlocksAmount int) (*[]types.FullL2Block, *[]types.GerUpdate, []types.BookmarkProto, []types.BookmarkProto, uint64, error) {
+	fullL2Blocks := []types.FullL2Block{}
+	totalGerUpdates := []types.GerUpdate{}
+	entriesRead := uint64(0)
+	batchBookmarks := []types.BookmarkProto{}
+	blockBookmarks := []types.BookmarkProto{}
+	fromEntry := uint64(0)
+
+	for {
+		if len(fullL2Blocks) >= l2BlocksAmount || entriesRead+fromEntry >= c.Header.TotalEntries {
+			break
+		}
+
+		fullBlock, _, _, gerUpdates, batchBookmark, blockBookmark, fe, er, err := c.readFullBlockProto()
+
+		if err != nil {
+			return nil, nil, nil, nil, 0, fmt.Errorf("failed to read full block: %v", err)
+		}
+
+		// skip over bookmarks (but only when fullblock is nil or will miss l2 blocks)
+		if (batchBookmark != nil || blockBookmark != nil) && fullBlock == nil {
+			continue
+		}
+
+		if fromEntry == 0 {
+			fromEntry = fe
+		}
+
+		if gerUpdates != nil {
+			totalGerUpdates = append(totalGerUpdates, *gerUpdates...)
+		}
+		entriesRead += er
+		if fullBlock != nil {
+			fullL2Blocks = append(fullL2Blocks, *fullBlock)
+		}
+		if batchBookmark != nil {
+			batchBookmarks = append(batchBookmarks, *batchBookmark)
+		}
+		if blockBookmark != nil {
+			blockBookmarks = append(blockBookmarks, *blockBookmark)
+		}
 	}
 
-	switch file.EntryType {
-	case types.BookmarkEntryType:
-		var bookmark *types.BookmarkProto
-		if bookmark, err = types.UnmarshalBookmark(file.Data); err != nil {
-			return
-		}
-		if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_BATCH {
-			batchBookmark = bookmark
-			log.Trace("batch bookmark", "bookmark", bookmark)
-			return
+	return &fullL2Blocks, &totalGerUpdates, batchBookmarks, blockBookmarks, entriesRead, nil
+}
+
+func (c *StreamClient) readFullBlockProto() (*types.FullL2Block, *types.BatchStart, *types.BatchEnd, *[]types.GerUpdate, *types.BookmarkProto, *types.BookmarkProto, uint64, uint64, error) {
+	entriesRead := uint64(0)
+
+	file, err := c.readFileEntry()
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("read file entry error: %v", err)
+	}
+	entriesRead++
+	fromEntry := file.EntryNum
+
+	gerUpdates := []types.GerUpdate{}
+	var batchBookmark *types.BookmarkProto
+	var blockBookmark *types.BookmarkProto
+	var batchStart *types.BatchStart
+	var batchEnd *types.BatchEnd
+
+	for !file.IsL2Block() && !file.IsBatchStart() && !file.IsBatchEnd() {
+		if file.IsBookmark() {
+			bookmark, err := types.UnmarshalBookmark(file.Data)
+			if err != nil {
+				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse bookmark error: %v", err)
+			}
+			if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_BATCH {
+				batchBookmark = bookmark
+				log.Trace("batch bookmark", "bookmark", bookmark)
+				return nil, nil, nil, &gerUpdates, batchBookmark, nil, 0, 0, nil
+			} else {
+				blockBookmark = bookmark
+				log.Trace("block bookmark", "bookmark", bookmark)
+				return nil, nil, nil, &gerUpdates, nil, blockBookmark, 0, 0, nil
+			}
+		} else if file.IsGerUpdate() {
+			gerUpdate, err := types.DecodeGerUpdateProto(file.Data)
+			if err != nil {
+				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse gerUpdate error: %v", err)
+			}
+			log.Trace("ger update", "ger", gerUpdate)
+			gerUpdates = append(gerUpdates, *gerUpdate)
 		} else {
-			blockBookmark = bookmark
-			log.Trace("block bookmark", "bookmark", bookmark)
-			return
+			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("unexpected entry type: %d", file.EntryType)
 		}
-	case types.EntryTypeGerUpdate:
-		gerUpdate, err = types.DecodeGerUpdateProto(file.Data)
-		log.Trace("ger update", "ger", gerUpdate)
-		return
-	case types.EntryTypeBatchStart:
+
+		file, err = c.readFileEntry()
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("read file entry error: %v", err)
+		}
+		entriesRead++
+	}
+
+	// If starting with a batch, return so it can be held whilst blocks are added to it
+	if file.IsBatchStart() {
 		batchStart, err = types.UnmarshalBatchStart(file.Data)
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse batch start error: %v", err)
+		}
 		log.Trace("batch start", "batchStart", batchStart)
-		return
-	case types.EntryTypeBatchEnd:
+		return nil, batchStart, nil, &gerUpdates, nil, nil, fromEntry, entriesRead, nil
+	}
+
+	if file.IsBatchEnd() {
 		batchEnd, err = types.UnmarshalBatchEnd(file.Data)
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse batch end error: %v", err)
+		}
 		log.Trace("batch end", "batchEnd", batchEnd)
-		return
-	case types.EntryTypeL2Block:
+		// we might not have a block here if the batch end was immediately after the batch start
+		return nil, nil, batchEnd, &gerUpdates, nil, nil, fromEntry, entriesRead, nil
+	}
+
+	// Now handle the L2 block
+	var l2Block *types.FullL2Block
+	if file.IsL2Block() {
 		l2Block, err = types.UnmarshalL2Block(file.Data)
 		if err != nil {
-			return
+			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse L2 block error: %v", err)
 		}
 		log.Trace("l2 block", "l2Block", l2Block)
 
-		txs := []types.L2TransactionProto{}
+		file, err = c.readFileEntry()
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("read file entry error: %v", err)
+		}
+		entriesRead++
 
-		var innerFile *types.FileEntry
-		var l2Tx *types.L2TransactionProto
-	LOOP:
-		for {
-			if innerFile, err = c.readFileEntry(); err != nil {
-				return
-			}
-
-			if innerFile.IsL2Tx() {
-				if l2Tx, err = types.UnmarshalTx(innerFile.Data); err != nil {
-					return
+		// if not batch end or bookmark (l2 block - error on batch), then it must be a transaction
+		for !file.IsBatchEnd() && !file.IsBookmark() {
+			if file.IsL2Tx() {
+				l2Tx, err := types.UnmarshalTx(file.Data)
+				if err != nil {
+					return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse L2 transaction error: %v", err)
 				}
-				log.Trace("l2 tx", "l2Tx", l2Tx)
-				txs = append(txs, *l2Tx)
-			} else if innerFile.IsL2BlockEnd() {
-				break LOOP
-			} else if innerFile.IsBookmark() {
-				var bookmark *types.BookmarkProto
-				if bookmark, err = types.UnmarshalBookmark(innerFile.Data); err != nil || bookmark == nil {
-					return
-				}
-				if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK {
-					log.Trace("block bookmark", "bookmark", bookmark)
-					break LOOP
-				} else {
-					log.Trace("batch bookmark", "bookmark", bookmark)
-					err = fmt.Errorf("unexpected bookmark type inside block: %v", bookmark.Type())
-					return
-				}
-			} else if innerFile.IsBatchEnd() {
-				if batchEnd, err = types.UnmarshalBatchEnd(file.Data); err != nil {
-					return
-				}
-				log.Trace("batch end", "batchEnd", batchEnd)
-				break LOOP
+				l2Block.L2Txs = append(l2Block.L2Txs, *l2Tx)
+				log.Trace("l2tx", "tx", l2Tx)
 			} else {
-				err = fmt.Errorf("unexpected entry type inside a block: %d", innerFile.EntryType)
-				return
+				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("unexpected entry type, expected transaction or batch end: %d", file.EntryType)
 			}
+
+			file, err = c.readFileEntry()
+			if err != nil {
+				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("read file entry error: %v", err)
+			}
+			entriesRead++
 		}
 
-		l2Block.L2Txs = txs
-		return
-	case types.EntryTypeL2Tx:
-		err = fmt.Errorf("unexpected l2Tx out of block")
-		return
-	default:
-		err = fmt.Errorf("unexpected entry type: %d", file.EntryType)
-		return
+		if file.IsBatchEnd() {
+			batchEnd, err = types.UnmarshalBatchEnd(file.Data)
+			if err != nil {
+				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse batch end error: %v", err)
+			}
+			log.Trace("batch end", "batchEnd", batchEnd)
+		}
+		if file.IsBookmark() {
+			bookmark, err := types.UnmarshalBookmark(file.Data)
+			if err != nil {
+				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse bookmark error: %v", err)
+			}
+			if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_BATCH {
+				batchBookmark = bookmark
+				log.Trace("batch bookmark", "bookmark", bookmark)
+				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("unexpected bookmark type: %d", bookmark.BookmarkType())
+			} else {
+				blockBookmark = bookmark
+				log.Trace("block bookmark", "bookmark", bookmark)
+			}
+		}
+	} else {
+		return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("unexpected entry type: %d", file.EntryType)
 	}
+
+	return l2Block, batchStart, batchEnd, &gerUpdates, batchBookmark, blockBookmark, fromEntry, entriesRead, nil
 }
 
 // reads file bytes from socket and tries to parse them
 // returns the parsed FileEntry
-func (c *StreamClient) readFileEntry() (file *types.FileEntry, err error) {
+func (c *StreamClient) readFileEntry() (*types.FileEntry, error) {
 	// Read packet type
 	packet, err := readBuffer(c.conn, 1)
 	if err != nil {
-		return file, fmt.Errorf("failed to read packet type: %v", err)
+		return &types.FileEntry{}, fmt.Errorf("failed to read packet type: %v", err)
 	}
 
 	// Check packet type
@@ -507,52 +596,53 @@ func (c *StreamClient) readFileEntry() (file *types.FileEntry, err error) {
 		// Read server result entry for the command
 		r, err := c.readResultEntry(packet)
 		if err != nil {
-			return file, err
+			return &types.FileEntry{}, err
 		}
 		if err := r.GetError(); err != nil {
-			return file, fmt.Errorf("got Result error code %d: %v", r.ErrorNum, err)
+			return &types.FileEntry{}, fmt.Errorf("got Result error code %d: %v", r.ErrorNum, err)
 		}
-		return file, nil
+		return &types.FileEntry{}, nil
 	} else if packet[0] != PtData {
-		return file, fmt.Errorf("error expecting data packet type %d and received %d", PtData, packet[0])
+		return &types.FileEntry{}, fmt.Errorf("error expecting data packet type %d and received %d", PtData, packet[0])
 	}
 
 	// Read the rest of fixed size fields
 	buffer, err := readBuffer(c.conn, types.FileEntryMinSize-1)
 	if err != nil {
-		return file, fmt.Errorf("error reading file bytes: %v", err)
+		return &types.FileEntry{}, fmt.Errorf("error reading file bytes: %v", err)
 	}
 	buffer = append(packet, buffer...)
 
 	// Read variable field (data)
 	length := binary.BigEndian.Uint32(buffer[1:5])
 	if length < types.FileEntryMinSize {
-		return file, errors.New("error reading data entry: wrong data length")
+		return &types.FileEntry{}, errors.New("error reading data entry: wrong data length")
 	}
 
 	// Read rest of the file data
 	bufferAux, err := readBuffer(c.conn, length-types.FileEntryMinSize)
 	if err != nil {
-		return file, fmt.Errorf("error reading file data bytes: %v", err)
+		return &types.FileEntry{}, fmt.Errorf("error reading file data bytes: %v", err)
 	}
 	buffer = append(buffer, bufferAux...)
 
 	// Decode binary data to data entry struct
-	if file, err = types.DecodeFileEntry(buffer); err != nil {
-		return file, fmt.Errorf("decode file entry error: %v", err)
+	file, err := types.DecodeFileEntry(buffer)
+	if err != nil {
+		return &types.FileEntry{}, fmt.Errorf("decode file entry error: %v", err)
 	}
 
-	return
+	return file, nil
 }
 
 // reads header bytes from socket and tries to parse them
 // returns the parsed HeaderEntry
-func (c *StreamClient) readHeaderEntry() (h *types.HeaderEntry, err error) {
+func (c *StreamClient) readHeaderEntry() (*types.HeaderEntry, error) {
 
 	// Read header stream bytes
 	binaryHeader, err := readBuffer(c.conn, types.HeaderSizePreEtrog)
 	if err != nil {
-		return h, fmt.Errorf("failed to read header bytes %v", err)
+		return &types.HeaderEntry{}, fmt.Errorf("failed to read header bytes %v", err)
 	}
 
 	headLength := binary.BigEndian.Uint32(binaryHeader[1:5])
@@ -560,49 +650,51 @@ func (c *StreamClient) readHeaderEntry() (h *types.HeaderEntry, err error) {
 		// Read the rest of fixed size fields
 		buffer, err := readBuffer(c.conn, types.HeaderSize-types.HeaderSizePreEtrog)
 		if err != nil {
-			return h, fmt.Errorf("failed to read header bytes %v", err)
+			return &types.HeaderEntry{}, fmt.Errorf("failed to read header bytes %v", err)
 		}
 		binaryHeader = append(binaryHeader, buffer...)
 	}
 
 	// Decode bytes stream to header entry struct
-	if h, err = types.DecodeHeaderEntry(binaryHeader); err != nil {
-		return h, fmt.Errorf("error decoding binary header: %v", err)
+	h, err := types.DecodeHeaderEntry(binaryHeader)
+	if err != nil {
+		return &types.HeaderEntry{}, fmt.Errorf("error decoding binary header: %v", err)
 	}
 
-	return
+	return h, nil
 }
 
 // reads result bytes and tries to parse them
 // returns the parsed ResultEntry
-func (c *StreamClient) readResultEntry(packet []byte) (re *types.ResultEntry, err error) {
+func (c *StreamClient) readResultEntry(packet []byte) (*types.ResultEntry, error) {
 	if len(packet) != 1 {
-		return re, fmt.Errorf("expected packet size of 1, got: %d", len(packet))
+		return &types.ResultEntry{}, fmt.Errorf("expected packet size of 1, got: %d", len(packet))
 	}
 
 	// Read the rest of fixed size fields
 	buffer, err := readBuffer(c.conn, types.ResultEntryMinSize-1)
 	if err != nil {
-		return re, fmt.Errorf("failed to read main result bytes %v", err)
+		return &types.ResultEntry{}, fmt.Errorf("failed to read main result bytes %v", err)
 	}
 	buffer = append(packet, buffer...)
 
 	// Read variable field (errStr)
 	length := binary.BigEndian.Uint32(buffer[1:5])
 	if length < types.ResultEntryMinSize {
-		return re, fmt.Errorf("%s Error reading result entry", c.id)
+		return &types.ResultEntry{}, fmt.Errorf("%s Error reading result entry", c.id)
 	}
 
 	// read the rest of the result
 	bufferAux, err := readBuffer(c.conn, length-types.ResultEntryMinSize)
 	if err != nil {
-		return re, fmt.Errorf("failed to read result errStr bytes %v", err)
+		return &types.ResultEntry{}, fmt.Errorf("failed to read result errStr bytes %v", err)
 	}
 	buffer = append(buffer, bufferAux...)
 
 	// Decode binary entry result
-	if re, err = types.DecodeResultEntry(buffer); err != nil {
-		return re, fmt.Errorf("decode result entry error: %v", err)
+	re, err := types.DecodeResultEntry(buffer)
+	if err != nil {
+		return &types.ResultEntry{}, fmt.Errorf("decode result entry error: %v", err)
 	}
 
 	return re, nil
