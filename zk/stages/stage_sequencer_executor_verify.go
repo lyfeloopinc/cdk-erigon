@@ -175,7 +175,8 @@ func SpawnSequencerExecutorVerifyStage(
 				}
 
 				l1InfoTreeMinTimestamps := make(map[uint64]uint64)
-				if _, err = cfg.verifier.GetWholeBatchStreamBytes(response.BatchNumber, tx, blockNumbers, hermezDbReader, l1InfoTreeMinTimestamps, nil); err != nil {
+				_, err = cfg.verifier.GetStreamBytes(response.BatchNumber, tx, blockNumbers, hermezDbReader, l1InfoTreeMinTimestamps, nil)
+				if err != nil {
 					return err
 				}
 
@@ -216,7 +217,7 @@ func SpawnSequencerExecutorVerifyStage(
 						senderMapKey := sender.Hex()
 
 						blocksForStreamBytes, transactionsToIncludeByIndex := limboStreamBytesBuilderHelper.append(senderMapKey, blockNumber, i)
-						streamBytes, err := cfg.verifier.GetWholeBatchStreamBytes(response.BatchNumber, tx, blocksForStreamBytes, hermezDbReader, l1InfoTreeMinTimestamps, transactionsToIncludeByIndex)
+						streamBytes, err := cfg.verifier.GetStreamBytes(response.BatchNumber, tx, blocksForStreamBytes, hermezDbReader, l1InfoTreeMinTimestamps, transactionsToIncludeByIndex)
 						if err != nil {
 							return err
 						}

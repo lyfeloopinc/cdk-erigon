@@ -17,7 +17,6 @@ import (
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/chain"
 	"github.com/ledgerwatch/erigon/core/rawdb"
-	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
 	"github.com/ledgerwatch/erigon/zk/datastream/server"
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
@@ -228,7 +227,7 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 		hermezDb := hermez_db.NewHermezDbReader(tx)
 
 		l1InfoTreeMinTimestamps := make(map[uint64]uint64)
-		streamBytes, err := v.GetWholeBatchStreamBytes(request.BatchNumber, tx, blocks, hermezDb, l1InfoTreeMinTimestamps, nil)
+		streamBytes, err := v.GetStreamBytes(request.BatchNumber, tx, blocks, hermezDb, l1InfoTreeMinTimestamps, nil)
 		if err != nil {
 			return verifierBundle, err
 		}
@@ -330,10 +329,10 @@ func (v *LegacyExecutorVerifier) checkAndWriteToStream(tx kv.Tx, hdb *hermez_db.
 
 		// check if we have the next batch we're waiting for
 		if latestBatch == newBatch-1 {
+			v.lowestWrittenBatch = newBatch
 			if err := v.WriteBatchToStream(newBatch, hdb, tx); err != nil {
 				return err
 			}
-			v.lowestWrittenBatch = newBatch
 			delete(v.responsesToWrite, newBatch)
 		}
 	}
@@ -441,8 +440,12 @@ func (v *LegacyExecutorVerifier) IsRequestAddedUnsafe(batch uint64) bool {
 
 func (v *LegacyExecutorVerifier) WriteBatchToStream(batchNumber uint64, hdb *hermez_db.HermezDbReader, roTx kv.Tx) error {
 	log.Info("[Verifier] Writing batch to stream", "batch", batchNumber)
+	blks, err := hdb.GetL2BlockNosByBatch(batchNumber)
+	if err != nil {
+		return err
+	}
 
-	if err := v.streamServer.WriteWholeBatchToStream("verifier", roTx, hdb, v.lowestWrittenBatch, batchNumber); err != nil {
+	if err := v.streamServer.WriteBlocksToStream(roTx, hdb, blks[0], blks[len(blks)-1], "verifier"); err != nil {
 		return err
 	}
 	return nil
@@ -495,58 +498,49 @@ func (v *LegacyExecutorVerifier) availableBlocksToProcess(innerCtx context.Conte
 	return blocks, nil
 }
 
-func (v *LegacyExecutorVerifier) GetWholeBatchStreamBytes(
+func (v *LegacyExecutorVerifier) GetStreamBytes(
 	batchNumber uint64,
 	tx kv.Tx,
-	blockNumbers []uint64,
+	blocks []uint64,
 	hermezDb *hermez_db.HermezDbReader,
 	l1InfoTreeMinTimestamps map[uint64]uint64,
 	transactionsToIncludeByIndex [][]int, // passing nil here will include all transactions in the blocks
-) (streamBytes []byte, err error) {
-	blocks := make([]types.Block, 0, len(blockNumbers))
-	txsPerBlock := make(map[uint64][]types.Transaction)
+) ([]byte, error) {
+	lastBlock, err := rawdb.ReadBlockByNumber(tx, blocks[0]-1)
+	if err != nil {
+		return nil, err
+	}
+	var streamBytes []byte
 
 	// as we only ever use the executor verifier for whole batches we can safely assume that the previous batch
 	// will always be the request batch - 1 and that the first block in the batch will be at the batch
 	// boundary so we will always add in the batch bookmark to the stream
 	previousBatch := batchNumber - 1
 
-	for idx, blockNumber := range blockNumbers {
+	for idx, blockNumber := range blocks {
 		block, err := rawdb.ReadBlockByNumber(tx, blockNumber)
 		if err != nil {
 			return nil, err
 		}
-		blocks = append(blocks, *block)
 
-		filteredTransactions := block.Transactions()
-		// filter transactions by indexes that should be included
+		var sBytes []byte
+
+		isBatchEnd := idx == len(blocks)-1
+
+		var transactionsToIncludeByIndexInBlock []int = nil
 		if transactionsToIncludeByIndex != nil {
-			filteredTransactions = filterTransactionByIndexes(block.Transactions(), transactionsToIncludeByIndex[idx])
+			transactionsToIncludeByIndexInBlock = transactionsToIncludeByIndex[idx]
+		}
+		sBytes, err = server.CreateAndBuildStreamEntryBytesProto(v.streamServer.GetChainId(), block, hermezDb, tx, lastBlock, batchNumber, previousBatch, l1InfoTreeMinTimestamps, isBatchEnd, transactionsToIncludeByIndexInBlock)
+		if err != nil {
+			return nil, err
 		}
 
-		txsPerBlock[blockNumber] = filteredTransactions
+		streamBytes = append(streamBytes, sBytes...)
+		lastBlock = block
+		// we only put in the batch bookmark at the start of the stream data once
+		previousBatch = batchNumber
 	}
 
-	entries, err := server.BuildWholeBatchStreamEntriesProto(tx, hermezDb, v.streamServer.GetChainId(), batchNumber, previousBatch, blocks, txsPerBlock, l1InfoTreeMinTimestamps)
-	if err != nil {
-		return nil, err
-	}
-
-	return entries.Marshal()
-}
-
-func filterTransactionByIndexes(
-	filteredTransactions types.Transactions,
-	transactionsToIncludeByIndex []int,
-) types.Transactions {
-	if transactionsToIncludeByIndex != nil {
-		filteredTransactionsBuilder := make(types.Transactions, len(transactionsToIncludeByIndex))
-		for i, txIndexInBlock := range transactionsToIncludeByIndex {
-			filteredTransactionsBuilder[i] = filteredTransactions[txIndexInBlock]
-		}
-
-		filteredTransactions = filteredTransactionsBuilder
-	}
-
-	return filteredTransactions
+	return streamBytes, nil
 }
