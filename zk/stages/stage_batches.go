@@ -346,15 +346,29 @@ LOOP:
 				rawdb.WriteForkchoiceFinalized(tx, l2Block.L2Blockhash)
 			}
 
-			if lastHash != emptyHash {
-				l2Block.ParentHash = lastHash
-			} else {
-				// first block in the loop so read the parent hash
-				previousHash, err := eriDb.ReadCanonicalHash(l2Block.L2BlockNumber - 1)
+			var previousHashFromDb common.Hash
+			if l2Block.L2BlockNumber > 0 {
+				previousHashFromDb, err = eriDb.ReadCanonicalHash(l2Block.L2BlockNumber - 1)
 				if err != nil {
 					return fmt.Errorf("failed to get genesis header: %v", err)
 				}
-				l2Block.ParentHash = previousHash
+			}
+
+			if lastHash != emptyHash {
+				if previousHashFromDb != lastHash {
+					// rollback blocks until the found ancestor
+					ancestorBlockNum, err := findAncestorBlockNumber(eriDb, l2Block.L2BlockNumber, l2Block.L2Blockhash)
+					if err != nil {
+						return err
+					}
+
+					u.UnwindTo(ancestorBlockNum, l2Block.L2Blockhash)
+					continue
+				}
+
+				l2Block.ParentHash = lastHash
+			} else {
+				l2Block.ParentHash = previousHashFromDb
 			}
 
 			if err := writeL2Block(eriDb, hermezDb, &l2Block, highestL1InfoTreeIndex); err != nil {
@@ -898,4 +912,36 @@ func writeL2Block(eriDb ErigonDb, hermezDb HermezDb, l2Block *types.FullL2Block,
 	}
 
 	return nil
+}
+
+// findAncestorBlockNumber searches the database for the first block with a specified hash starting
+// from a given block number and moving backwards. The function is intended to find an ancestor block
+// with a particular hash in the blockchain.
+// Parameters:
+//   - db: An instance of ErigonDb, which provides methods to read data from the blockchain database.
+//   - startBlockNum: The block number from which to start the search. The search proceeds backwards
+//     from this block number to block number 0.
+//   - targetHash: The hash of the block that the function is trying to find.
+//
+// Returns:
+//   - uint64: The block number of the first block encountered with the specified hash.
+//   - error: An error object that is not nil if the function encounters an issue while reading the
+//     database or if the target hash is not found.
+func findAncestorBlockNumber(db *erigon_db.ErigonDb, startBlockNum uint64, targetHash common.Hash) (uint64, error) {
+	for blockNum := startBlockNum; blockNum > 0; blockNum-- {
+		blockHash, err := db.ReadCanonicalHash(blockNum)
+		if err != nil {
+			return 0, err
+		}
+
+		if blockHash == emptyHash {
+			return 0, fmt.Errorf("failed to retrieve hash for block num %d", blockNum)
+		}
+
+		if blockHash == targetHash {
+			return blockNum, nil
+		}
+	}
+
+	return 0, fmt.Errorf("failed to find ancestor with hash %s in the db", targetHash)
 }
