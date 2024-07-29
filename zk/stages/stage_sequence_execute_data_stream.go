@@ -24,7 +24,7 @@ type BlockStatus struct {
 	Error       error
 }
 
-func (sbc *SequencerBatchStreamWriter) CheckAndCommitUpdates() ([]BlockStatus, int, error) {
+func (sbc *SequencerBatchStreamWriter) CommitNewUpdates() ([]BlockStatus, int, error) {
 	var written []BlockStatus
 	responses, remaining, err := sbc.batchVerifier.CheckProgress()
 	if err != nil {
