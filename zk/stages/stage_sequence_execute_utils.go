@@ -49,7 +49,7 @@ const (
 	stateStreamLimit uint64 = 1_000
 
 	transactionGasLimit = 30000000
-
+	
 	// this is the max number of send transactions that can be included in a block without overflowing counters
 	// this is for simple send transactions, any other type would consume more counters
 	//
@@ -89,6 +89,8 @@ type SequenceBlockCfg struct {
 
 	txPool   *txpool.TxPool
 	txPoolDb kv.RwDB
+
+	yieldSize uint16
 }
 
 func StageSequenceBlocksCfg(
@@ -114,6 +116,7 @@ func StageSequenceBlocksCfg(
 
 	txPool *txpool.TxPool,
 	txPoolDb kv.RwDB,
+	yieldSize uint16,
 ) SequenceBlockCfg {
 
 	return SequenceBlockCfg{
@@ -138,6 +141,7 @@ func StageSequenceBlocksCfg(
 		zk:               zk,
 		txPool:           txPool,
 		txPoolDb:         txPoolDb,
+		yieldSize:        yieldSize,
 	}
 }
 
