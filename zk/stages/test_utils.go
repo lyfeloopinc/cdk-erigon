@@ -1,6 +1,7 @@
 package stages
 
 import (
+	"fmt"
 	"sync/atomic"
 
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
@@ -52,6 +53,16 @@ func (c *TestDatastreamClient) ReadAllEntriesToChannel() error {
 
 func (c *TestDatastreamClient) GetL2BlockChan() chan types.FullL2Block {
 	return c.l2BlockChan
+}
+
+func (c *TestDatastreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
+	for _, l2Block := range c.fullL2Blocks {
+		if l2Block.L2BlockNumber == blockNum {
+			return &l2Block, nil
+		}
+	}
+
+	return nil, fmt.Errorf("l2 block %d not found", blockNum)
 }
 
 func (c *TestDatastreamClient) GetL2TxChan() chan types.L2TransactionProto {

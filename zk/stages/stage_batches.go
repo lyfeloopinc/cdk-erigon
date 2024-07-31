@@ -76,6 +76,7 @@ type HermezDb interface {
 type DatastreamClient interface {
 	ReadAllEntriesToChannel() error
 	GetL2BlockChan() chan types.FullL2Block
+	GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error)
 	GetL2TxChan() chan types.L2TransactionProto
 	GetBatchStartChan() chan types.BatchStart
 	GetBatchEndChan() chan types.BatchEnd
@@ -346,18 +347,18 @@ LOOP:
 				rawdb.WriteForkchoiceFinalized(tx, l2Block.L2Blockhash)
 			}
 
-			var previousHashFromDb common.Hash
+			var dbParentBlockHash common.Hash
 			if l2Block.L2BlockNumber > 0 {
-				previousHashFromDb, err = eriDb.ReadCanonicalHash(l2Block.L2BlockNumber - 1)
+				dbParentBlockHash, err = eriDb.ReadCanonicalHash(l2Block.L2BlockNumber - 1)
 				if err != nil {
 					return fmt.Errorf("failed to get genesis header: %v", err)
 				}
 			}
 
 			if lastHash != emptyHash {
-				if previousHashFromDb != lastHash {
-					// rollback blocks until the found ancestor
-					ancestorBlockNum, err := findAncestorBlockNumber(eriDb, l2Block.L2BlockNumber, l2Block.L2Blockhash)
+				if dbParentBlockHash != lastHash {
+					// unwind/rollback blocks until the found ancestor block
+					ancestorBlockNum, err := findAncestorBlockNumber(eriDb, cfg.dsClient, l2Block.L2BlockNumber, l2Block.L2Blockhash)
 					if err != nil {
 						return err
 					}
@@ -368,7 +369,7 @@ LOOP:
 
 				l2Block.ParentHash = lastHash
 			} else {
-				l2Block.ParentHash = previousHashFromDb
+				l2Block.ParentHash = dbParentBlockHash
 			}
 
 			if err := writeL2Block(eriDb, hermezDb, &l2Block, highestL1InfoTreeIndex); err != nil {
@@ -914,34 +915,53 @@ func writeL2Block(eriDb ErigonDb, hermezDb HermezDb, l2Block *types.FullL2Block,
 	return nil
 }
 
-// findAncestorBlockNumber searches the database for the first block with a specified hash starting
-// from a given block number and moving backwards. The function is intended to find an ancestor block
-// with a particular hash in the blockchain.
+// findAncestorBlockNumber searches the latest ancestor block from the database, that matches specified hash using the binary search.
 // Parameters:
 //   - db: An instance of ErigonDb, which provides methods to read data from the blockchain database.
-//   - startBlockNum: The block number from which to start the search. The search proceeds backwards
-//     from this block number to block number 0.
+//   - dsClient: An instance of DatastreamClient, that provides mechanism to read data from the sequencer.
+//   - latestBlockNum: The upper bound of search interval.
 //   - targetHash: The hash of the block that the function is trying to find.
 //
 // Returns:
-//   - uint64: The block number of the first block encountered with the specified hash.
+//   - uint64: The block number of the latest ancestor block encountered with the specified hash.
 //   - error: An error object that is not nil if the function encounters an issue while reading the
 //     database or if the target hash is not found.
-func findAncestorBlockNumber(db *erigon_db.ErigonDb, startBlockNum uint64, targetHash common.Hash) (uint64, error) {
-	for blockNum := startBlockNum; blockNum > 0; blockNum-- {
-		blockHash, err := db.ReadCanonicalHash(blockNum)
+func findAncestorBlockNumber(db *erigon_db.ErigonDb, dsClient DatastreamClient, latestBlockNum uint64, targetHash common.Hash) (uint64, error) {
+	var (
+		startBlockNum = uint64(0)
+		endBlockNum   = latestBlockNum
+		blockNumber   *uint64
+	)
+
+	if startBlockNum >= endBlockNum {
+		return 0, fmt.Errorf("failed to find ancestor with hash %s in the db."+
+			"The provided block interval is invalid (start block=%d, end block=%d).",
+			targetHash, startBlockNum, latestBlockNum)
+	}
+
+	for startBlockNum < endBlockNum {
+		midBlockNum := (startBlockNum + endBlockNum) / 2
+		midBlockStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
 		if err != nil {
 			return 0, err
 		}
 
-		if blockHash == emptyHash {
-			return 0, fmt.Errorf("failed to retrieve hash for block num %d", blockNum)
+		midBlockDbHash, err := db.ReadCanonicalHash(midBlockNum)
+		if err != nil {
+			return 0, err
 		}
 
-		if blockHash == targetHash {
-			return blockNum, nil
+		if midBlockStream.L2Blockhash == midBlockDbHash {
+			startBlockNum = midBlockNum + 1
+			blockNumber = &midBlockNum
+		} else {
+			endBlockNum = midBlockNum - 1
 		}
 	}
 
-	return 0, fmt.Errorf("failed to find ancestor with hash %s in the db", targetHash)
+	if blockNumber == nil {
+		return 0, fmt.Errorf("failed to find ancestor with hash %s in the db", targetHash)
+	}
+
+	return *blockNumber, nil
 }

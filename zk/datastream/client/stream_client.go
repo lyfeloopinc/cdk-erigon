@@ -99,6 +99,25 @@ func (c *StreamClient) GetBatchEndChan() chan types.BatchEnd {
 func (c *StreamClient) GetL2BlockChan() chan types.FullL2Block {
 	return c.l2BlockChan
 }
+func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
+	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
+
+	bookmarkRaw, err := bookmark.Marshal()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := c.initiateDownloadBookmark(bookmarkRaw); err != nil {
+		return nil, err
+	}
+
+	l2Block, _, _, _, _, _, err := c.readFullBlockProto()
+	if err != nil {
+		return nil, err
+	}
+
+	return l2Block, nil
+}
 func (c *StreamClient) GetL2TxChan() chan types.L2TransactionProto {
 	return c.l2TxChan
 }
