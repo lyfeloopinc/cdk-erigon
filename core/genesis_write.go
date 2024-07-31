@@ -167,7 +167,7 @@ func WriteGenesisBlock(tx kv.RwTx, genesis *types.Genesis, overrideShanghaiTime 
 	// Special case: don't change the existing config of a private chain if no new
 	// config is supplied. This is useful, for example, to preserve DB config created by erigon init.
 	// In that case, only apply the overrides.
-	if genesis == nil && params.ChainConfigByGenesisHash(storedHash) == nil {
+	if genesis == nil && params.ChainConfigByGenesisHashAndName(storedHash, storedCfg.ChainName) == nil {
 		newCfg = storedCfg
 		applyOverrides(newCfg)
 	}

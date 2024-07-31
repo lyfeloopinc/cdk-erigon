@@ -369,6 +369,15 @@ func ChainConfigByGenesisHash(genesisHash libcommon.Hash) *chain.Config {
 	}
 }
 
+func ChainConfigByGenesisHashAndName(genesisHash libcommon.Hash, chain string) *chain.Config {
+	config := ChainConfigByGenesisHash(genesisHash)
+	if config == nil {
+		// caveat: this doesn't verify the hash vs the conf file
+		config = ChainConfigByChainName(chain)
+	}
+	return config
+}
+
 func NetworkIDByChainName(chain string) uint64 {
 	switch chain {
 	case networkname.DevChainName:
