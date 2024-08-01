@@ -23,6 +23,7 @@ import (
 	txtype "github.com/ledgerwatch/erigon/zk/tx"
 
 	"github.com/ledgerwatch/erigon/core/rawdb"
+	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
 	"github.com/ledgerwatch/erigon/zk/utils"
 	"github.com/ledgerwatch/log/v3"
@@ -357,8 +358,8 @@ LOOP:
 
 			if lastHash != emptyHash {
 				if dbParentBlockHash != lastHash {
-					// unwind/rollback blocks until the found ancestor block
-					ancestorBlockNum, err := findAncestorBlockNumber(eriDb, cfg.dsClient, l2Block.L2BlockNumber, l2Block.L2Blockhash)
+					// unwind/rollback blocks until the latest common ancestor block
+					ancestorBlockNum, err := findCommonAncestorBlockNum(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
 					if err != nil {
 						return err
 					}
@@ -915,18 +916,22 @@ func writeL2Block(eriDb ErigonDb, hermezDb HermezDb, l2Block *types.FullL2Block,
 	return nil
 }
 
-// findAncestorBlockNumber searches the latest ancestor block from the database, that matches specified hash using the binary search.
+// findCommonAncestorBlockNum searches the latest common ancestor block number between the data stream and the local db.
 // Parameters:
 //   - db: An instance of ErigonDb, which provides methods to read data from the blockchain database.
+//   - hermezDb: An instance of HermezDb, which provides methods to read data from Hermez database.
 //   - dsClient: An instance of DatastreamClient, that provides mechanism to read data from the sequencer.
 //   - latestBlockNum: The upper bound of search interval.
-//   - targetHash: The hash of the block that the function is trying to find.
 //
 // Returns:
 //   - uint64: The block number of the latest ancestor block encountered with the specified hash.
 //   - error: An error object that is not nil if the function encounters an issue while reading the
 //     database or if the target hash is not found.
-func findAncestorBlockNumber(db *erigon_db.ErigonDb, dsClient DatastreamClient, latestBlockNum uint64, targetHash common.Hash) (uint64, error) {
+func findCommonAncestorBlockNum(
+	db *erigon_db.ErigonDb,
+	hermezDb state.ReadOnlyHermezDb,
+	dsClient DatastreamClient,
+	latestBlockNum uint64) (uint64, error) {
 	var (
 		startBlockNum = uint64(0)
 		endBlockNum   = latestBlockNum
@@ -934,9 +939,9 @@ func findAncestorBlockNumber(db *erigon_db.ErigonDb, dsClient DatastreamClient, 
 	)
 
 	if startBlockNum >= endBlockNum {
-		return 0, fmt.Errorf("failed to find ancestor with hash %s in the db."+
+		return 0, fmt.Errorf("failed to find common ancestor in the db."+
 			"The provided block interval is invalid (start block=%d, end block=%d).",
-			targetHash, startBlockNum, latestBlockNum)
+			startBlockNum, latestBlockNum)
 	}
 
 	for startBlockNum < endBlockNum {
@@ -951,7 +956,13 @@ func findAncestorBlockNumber(db *erigon_db.ErigonDb, dsClient DatastreamClient, 
 			return 0, err
 		}
 
-		if midBlockStream.L2Blockhash == midBlockDbHash {
+		dbBatchNum, err := hermezDb.GetBatchNoByL2Block(midBlockNum)
+		if err != nil {
+			return 0, err
+		}
+
+		if midBlockStream.L2Blockhash == midBlockDbHash &&
+			midBlockStream.BatchNumber == dbBatchNum {
 			startBlockNum = midBlockNum + 1
 			blockNumber = &midBlockNum
 		} else {
@@ -960,7 +971,7 @@ func findAncestorBlockNumber(db *erigon_db.ErigonDb, dsClient DatastreamClient, 
 	}
 
 	if blockNumber == nil {
-		return 0, fmt.Errorf("failed to find ancestor with hash %s in the db", targetHash)
+		return 0, errors.New("failed to find common ancestor in the db")
 	}
 
 	return *blockNumber, nil
