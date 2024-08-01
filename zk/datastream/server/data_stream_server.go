@@ -568,3 +568,76 @@ func (srv *DataStreamServer) getLastEntryOfType(entryType datastreamer.EntryType
 
 	return emtryEntry, false, nil
 }
+
+type dataStreamServerIterator struct {
+	stream      *datastreamer.StreamServer
+	curEntryNum uint64
+}
+
+func newDataStreamServerIterator(stream *datastreamer.StreamServer, start uint64) *dataStreamServerIterator {
+	return &dataStreamServerIterator{
+		stream:      stream,
+		curEntryNum: start,
+	}
+}
+
+func (it *dataStreamServerIterator) NextFileEntry() (entry *types.FileEntry, err error) {
+	var fileEntry datastreamer.FileEntry
+	fileEntry, err = it.stream.GetEntry(it.curEntryNum)
+	if err != nil {
+		return nil, err
+	}
+
+	it.curEntryNum += 1
+
+	return &types.FileEntry{
+		PacketType: uint8(fileEntry.Type),
+		Length:     fileEntry.Length,
+		EntryType:  types.EntryType(fileEntry.Type),
+		EntryNum:   fileEntry.Number,
+		Data:       fileEntry.Data,
+	}, nil
+}
+
+func (srv *DataStreamServer) ReadBatches(start uint64, end uint64) ([][]*types.FullL2Block, error) {
+	bookmark := types.NewBookmarkProto(start, datastream.BookmarkType_BOOKMARK_TYPE_BATCH)
+	marshalled, err := bookmark.Marshal()
+	if err != nil {
+		return nil, err
+	}
+
+	entryNum, err := srv.stream.GetBookmark(marshalled)
+
+	if err != nil {
+		return nil, err
+	}
+
+	iterator := newDataStreamServerIterator(srv.stream, entryNum)
+
+	return ReadBatches(iterator, start, end)
+}
+
+func ReadBatches(iterator types.FileEntryIterator, start uint64, end uint64) ([][]*types.FullL2Block, error) {
+	batches := make([][]*types.FullL2Block, end-start+1)
+
+	for {
+		block, batchStart, batchEnd, _, _, _, err := types.FullBlockProto(iterator)
+		if err != nil {
+			return nil, err
+		}
+
+		if batchEnd != nil && batchEnd.Number == end {
+			break
+		}
+
+		if batchStart != nil {
+			batches[batchStart.Number-start] = []*types.FullL2Block{}
+		}
+
+		if block != nil {
+			batches[block.BatchNumber-start] = append(batches[block.BatchNumber-start], block)
+		}
+	}
+
+	return batches, nil
+}

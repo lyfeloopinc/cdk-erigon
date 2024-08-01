@@ -201,7 +201,7 @@ func (c *StreamClient) ExecutePerFile(bookmark *types.BookmarkProto, function fu
 		if c.Header.TotalEntries == count {
 			break
 		}
-		file, err := c.readFileEntry()
+		file, err := c.NextFileEntry()
 		if err != nil {
 			return fmt.Errorf("error reading file entry: %v", err)
 		}
@@ -321,7 +321,7 @@ LOOP:
 			c.conn.SetReadDeadline(time.Now().Add(c.checkTimeout))
 		}
 
-		fullBlock, batchStart, batchEnd, gerUpdate, batchBookmark, blockBookmark, localErr := c.readFullBlockProto()
+		fullBlock, batchStart, batchEnd, gerUpdate, batchBookmark, blockBookmark, localErr := types.FullBlockProto(c)
 		if localErr != nil {
 			err = localErr
 			break
@@ -344,7 +344,7 @@ LOOP:
 		}
 
 		if batchEnd != nil {
-			// this check was inside c.readFullBlockProto() but it is better to move it here
+			// this check was inside types.FullBlockProto(c) but it is better to move it here
 			c.batchEndChan <- *batchEnd
 		}
 
@@ -378,116 +378,9 @@ func (c *StreamClient) tryReConnect() error {
 	return err
 }
 
-func (c *StreamClient) readFullBlockProto() (
-	l2Block *types.FullL2Block,
-	batchStart *types.BatchStart,
-	batchEnd *types.BatchEnd,
-	gerUpdate *types.GerUpdate,
-	batchBookmark *types.BookmarkProto,
-	blockBookmark *types.BookmarkProto,
-	err error,
-) {
-	file, err := c.readFileEntry()
-	if err != nil {
-		err = fmt.Errorf("read file entry error: %v", err)
-		return
-	}
-
-	switch file.EntryType {
-	case types.BookmarkEntryType:
-		var bookmark *types.BookmarkProto
-		if bookmark, err = types.UnmarshalBookmark(file.Data); err != nil {
-			return
-		}
-		if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_BATCH {
-			batchBookmark = bookmark
-			return
-		} else {
-			blockBookmark = bookmark
-			return
-		}
-	case types.EntryTypeGerUpdate:
-		if gerUpdate, err = types.DecodeGerUpdateProto(file.Data); err != nil {
-			return
-		}
-		log.Trace("ger update", "ger", gerUpdate)
-		return
-	case types.EntryTypeBatchStart:
-		if batchStart, err = types.UnmarshalBatchStart(file.Data); err != nil {
-			return
-		}
-		return
-	case types.EntryTypeBatchEnd:
-		if batchEnd, err = types.UnmarshalBatchEnd(file.Data); err != nil {
-			return
-		}
-		return
-	case types.EntryTypeL2Block:
-		if l2Block, err = types.UnmarshalL2Block(file.Data); err != nil {
-			return
-		}
-
-		txs := []types.L2TransactionProto{}
-
-		var innerFile *types.FileEntry
-		var l2Tx *types.L2TransactionProto
-	LOOP:
-		for {
-			if innerFile, err = c.readFileEntry(); err != nil {
-				return
-			}
-
-			if innerFile.IsL2Tx() {
-				if l2Tx, err = types.UnmarshalTx(innerFile.Data); err != nil {
-					return
-				}
-				txs = append(txs, *l2Tx)
-			} else if innerFile.IsL2BlockEnd() {
-				var l2BlockEnd *types.L2BlockEndProto
-				if l2BlockEnd, err = types.UnmarshalL2BlockEnd(innerFile.Data); err != nil {
-					return
-				}
-				if l2BlockEnd.GetBlockNumber() != l2Block.L2BlockNumber {
-					err = fmt.Errorf("block end number (%d) not equal to block number (%d)", l2BlockEnd.GetBlockNumber(), l2Block.L2BlockNumber)
-					return
-				}
-				break LOOP
-			} else if innerFile.IsBookmark() {
-				var bookmark *types.BookmarkProto
-				if bookmark, err = types.UnmarshalBookmark(innerFile.Data); err != nil || bookmark == nil {
-					return
-				}
-				if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK {
-					break LOOP
-				} else {
-					err = fmt.Errorf("unexpected bookmark type inside block: %v", bookmark.Type())
-					return
-				}
-			} else if innerFile.IsBatchEnd() {
-				if batchEnd, err = types.UnmarshalBatchEnd(file.Data); err != nil {
-					return
-				}
-				break LOOP
-			} else {
-				err = fmt.Errorf("unexpected entry type inside a block: %d", innerFile.EntryType)
-				return
-			}
-		}
-
-		l2Block.L2Txs = txs
-		return
-	case types.EntryTypeL2Tx:
-		err = fmt.Errorf("unexpected l2Tx out of block")
-		return
-	default:
-		err = fmt.Errorf("unexpected entry type: %d", file.EntryType)
-		return
-	}
-}
-
 // reads file bytes from socket and tries to parse them
 // returns the parsed FileEntry
-func (c *StreamClient) readFileEntry() (file *types.FileEntry, err error) {
+func (c *StreamClient) NextFileEntry() (file *types.FileEntry, err error) {
 	// Read packet type
 	packet, err := readBuffer(c.conn, 1)
 	if err != nil {
