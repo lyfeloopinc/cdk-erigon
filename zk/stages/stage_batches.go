@@ -304,7 +304,7 @@ LOOP:
 
 			// check for sequential block numbers
 			if l2Block.L2BlockNumber != lastBlockHeight+1 {
-				return fmt.Errorf("block number is not sequential, expected %d, got %d", lastBlockHeight+1, l2Block.L2BlockNumber)
+				panic(fmt.Sprintf("block number is not sequential, restart required, expected %d, got %d", lastBlockHeight+1, l2Block.L2BlockNumber))
 			}
 
 			// batch boundary - record the highest hashable block number (last block in last full batch)
