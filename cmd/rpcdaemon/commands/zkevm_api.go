@@ -635,7 +635,7 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 
 	oldAccInputHash, err := api.l1Syncer.GetOldAccInputHash(ctx, &api.config.AddressRollup, ApiRollupId, batchNo)
 	if err != nil {
-		return nil, err
+		batch.AccInputHash = common.Hash{0}
 	}
 	batch.AccInputHash = oldAccInputHash
 
