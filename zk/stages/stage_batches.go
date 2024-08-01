@@ -754,7 +754,7 @@ func PruneBatchesStage(s *stagedsync.PruneState, tx kv.RwTx, cfg BatchesCfg, ctx
 		defer tx.Rollback()
 	}
 
-	log.Info(fmt.Sprintf("[%s] Pruning barches...", logPrefix))
+	log.Info(fmt.Sprintf("[%s] Pruning batches...", logPrefix))
 	defer log.Info(fmt.Sprintf("[%s] Unwinding batches complete", logPrefix))
 
 	eriDb := erigon_db.NewErigonDb(tx)
