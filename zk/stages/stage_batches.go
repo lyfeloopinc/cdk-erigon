@@ -324,13 +324,14 @@ LOOP:
 				}
 
 				if batchNumMismatch {
+					log.Warn(fmt.Sprintf("[%s] Batch num mismatch detected", logPrefix))
 					// if any of the blocks have different batch number, it means that we need to trigger an unwinding of blocks
 					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
 					if err != nil {
 						return err
 					}
 
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, ancestorBlockNum))
+					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
 					u.UnwindTo(ancestorBlockNum, ancestorBlockHash)
 				}
 
@@ -395,7 +396,8 @@ LOOP:
 						return err
 					}
 
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, ancestorBlockNum))
+					log.Warn(fmt.Sprintf("[%s] Parent hashes mismatch (local db and DS), rollback triggered...", logPrefix))
+					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
 					u.UnwindTo(ancestorBlockNum, ancestorBlockHash)
 					continue
 				}
@@ -984,6 +986,9 @@ func findCommonAncestor(
 		midBlockStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
 		if err != nil {
 			return 0, emptyHash, err
+		}
+		if midBlockStream == nil {
+			return 0, emptyHash, fmt.Errorf("failed to fetch block %d from data stream", midBlockNum)
 		}
 
 		midBlockDbHash, err := db.ReadCanonicalHash(midBlockNum)
