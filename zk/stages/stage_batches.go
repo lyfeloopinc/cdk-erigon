@@ -303,6 +303,37 @@ LOOP:
 					// when the stage is fired up for the first time
 					log.Warn(fmt.Sprintf("[%s] Skipping block %d, already processed", logPrefix, l2Block.L2BlockNumber))
 				}
+
+				// check if all the blocks starting from the one coming from data streamer up to the latest block have the same batch number
+				batchNumMismatch := false
+				for i := l2Block.L2BlockNumber; i <= stageProgressBlockNo; i++ {
+					dsBlock, err := cfg.dsClient.GetL2BlockByNumber(i)
+					if err != nil {
+						return err
+					}
+
+					dbBatchNum, err := hermezDb.GetBatchNoByL2Block(i)
+					if err != nil {
+						return err
+					}
+
+					if dsBlock.BatchNumber != dbBatchNum {
+						batchNumMismatch = true
+						break
+					}
+				}
+
+				if batchNumMismatch {
+					// if any of the blocks have different batch number, it means that we need to trigger an unwinding of blocks
+					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
+					if err != nil {
+						return err
+					}
+
+					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, ancestorBlockNum))
+					u.UnwindTo(ancestorBlockNum, ancestorBlockHash)
+				}
+
 				continue
 			}
 
@@ -359,12 +390,13 @@ LOOP:
 			if lastHash != emptyHash {
 				if dbParentBlockHash != lastHash {
 					// unwind/rollback blocks until the latest common ancestor block
-					ancestorBlockNum, err := findCommonAncestorBlockNum(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
+					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
 					if err != nil {
 						return err
 					}
 
-					u.UnwindTo(ancestorBlockNum, l2Block.L2Blockhash)
+					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, ancestorBlockNum))
+					u.UnwindTo(ancestorBlockNum, ancestorBlockHash)
 					continue
 				}
 
@@ -916,7 +948,8 @@ func writeL2Block(eriDb ErigonDb, hermezDb HermezDb, l2Block *types.FullL2Block,
 	return nil
 }
 
-// findCommonAncestorBlockNum searches the latest common ancestor block number between the data stream and the local db.
+// findCommonAncestor searches the latest common ancestor block number and hash between the data stream and the local db.
+// The common ancestor block is the one that matches both l2 block hash and batch number.
 // Parameters:
 //   - db: An instance of ErigonDb, which provides methods to read data from the blockchain database.
 //   - hermezDb: An instance of HermezDb, which provides methods to read data from Hermez database.
@@ -924,22 +957,24 @@ func writeL2Block(eriDb ErigonDb, hermezDb HermezDb, l2Block *types.FullL2Block,
 //   - latestBlockNum: The upper bound of search interval.
 //
 // Returns:
-//   - uint64: The block number of the latest ancestor block encountered with the specified hash.
+//   - uint64: The block number of the latest common ancestor block.
+//   - common.Hash: The block hash of the latest common ancestor block.
 //   - error: An error object that is not nil if the function encounters an issue while reading the
 //     database or if the target hash is not found.
-func findCommonAncestorBlockNum(
+func findCommonAncestor(
 	db *erigon_db.ErigonDb,
 	hermezDb state.ReadOnlyHermezDb,
 	dsClient DatastreamClient,
-	latestBlockNum uint64) (uint64, error) {
+	latestBlockNum uint64) (uint64, common.Hash, error) {
 	var (
 		startBlockNum = uint64(0)
 		endBlockNum   = latestBlockNum
 		blockNumber   *uint64
+		blockHash     common.Hash
 	)
 
 	if startBlockNum >= endBlockNum {
-		return 0, fmt.Errorf("failed to find common ancestor in the db."+
+		return 0, emptyHash, fmt.Errorf("failed to find common ancestor in the db."+
 			"The provided block interval is invalid (start block=%d, end block=%d).",
 			startBlockNum, latestBlockNum)
 	}
@@ -948,31 +983,33 @@ func findCommonAncestorBlockNum(
 		midBlockNum := (startBlockNum + endBlockNum) / 2
 		midBlockStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
 		if err != nil {
-			return 0, err
+			return 0, emptyHash, err
 		}
 
 		midBlockDbHash, err := db.ReadCanonicalHash(midBlockNum)
 		if err != nil {
-			return 0, err
+			return 0, emptyHash, err
 		}
 
 		dbBatchNum, err := hermezDb.GetBatchNoByL2Block(midBlockNum)
 		if err != nil {
-			return 0, err
+			return 0, emptyHash, err
 		}
 
 		if midBlockStream.L2Blockhash == midBlockDbHash &&
 			midBlockStream.BatchNumber == dbBatchNum {
 			startBlockNum = midBlockNum + 1
+
 			blockNumber = &midBlockNum
+			blockHash = midBlockDbHash
 		} else {
 			endBlockNum = midBlockNum - 1
 		}
 	}
 
 	if blockNumber == nil {
-		return 0, errors.New("failed to find common ancestor in the db")
+		return 0, emptyHash, errors.New("failed to find common ancestor in the db")
 	}
 
-	return *blockNumber, nil
+	return *blockNumber, blockHash, nil
 }
