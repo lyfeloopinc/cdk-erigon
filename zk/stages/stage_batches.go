@@ -333,6 +333,7 @@ LOOP:
 
 					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
 					u.UnwindTo(ancestorBlockNum, ancestorBlockHash)
+					return nil
 				}
 
 				continue
@@ -399,7 +400,7 @@ LOOP:
 					log.Warn(fmt.Sprintf("[%s] Parent hashes mismatch (local db and DS), rollback triggered...", logPrefix))
 					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
 					u.UnwindTo(ancestorBlockNum, ancestorBlockHash)
-					continue
+					return nil
 				}
 
 				l2Block.ParentHash = lastHash
