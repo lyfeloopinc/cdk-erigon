@@ -34,6 +34,11 @@ const (
 	STAGE_PROGRESS_SAVE = 3000000
 )
 
+var (
+	// ErrFailedToFindCommonAncestor denotes error suggesting that the common ancestor is not found in the database
+	ErrFailedToFindCommonAncestor = errors.New("failed to find common ancestor block in the db")
+)
+
 type ErigonDb interface {
 	WriteHeader(batchNo *big.Int, blockHash common.Hash, stateRoot, txHash, parentHash common.Hash, coinbase common.Address, ts, gasLimit uint64) (*ethTypes.Header, error)
 	WriteBody(batchNo *big.Int, headerHash common.Hash, txs []ethTypes.Transaction) error
@@ -965,7 +970,7 @@ func writeL2Block(eriDb ErigonDb, hermezDb HermezDb, l2Block *types.FullL2Block,
 //   - error: An error object that is not nil if the function encounters an issue while reading the
 //     database or if the target hash is not found.
 func findCommonAncestor(
-	db *erigon_db.ErigonDb,
+	db erigon_db.ReadOnlyErigonDb,
 	hermezDb state.ReadOnlyHermezDb,
 	dsClient DatastreamClient,
 	latestBlockNum uint64) (uint64, common.Hash, error) {
@@ -976,13 +981,11 @@ func findCommonAncestor(
 		blockHash     common.Hash
 	)
 
-	if startBlockNum >= endBlockNum {
-		return 0, emptyHash, fmt.Errorf("failed to find common ancestor in the db."+
-			"The provided block interval is invalid (start block=%d, end block=%d).",
-			startBlockNum, latestBlockNum)
+	if latestBlockNum == 0 {
+		return 0, emptyHash, ErrFailedToFindCommonAncestor
 	}
 
-	for startBlockNum < endBlockNum {
+	for startBlockNum <= endBlockNum {
 		midBlockNum := (startBlockNum + endBlockNum) / 2
 		midBlockStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
 		if err != nil {
@@ -1014,7 +1017,7 @@ func findCommonAncestor(
 	}
 
 	if blockNumber == nil {
-		return 0, emptyHash, errors.New("failed to find common ancestor in the db")
+		return 0, emptyHash, ErrFailedToFindCommonAncestor
 	}
 
 	return *blockNumber, blockHash, nil
