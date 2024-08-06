@@ -168,11 +168,11 @@ func NewTestHermezDbReaderWrapper(ctx context.Context, reader *hermez_db.HermezD
 }
 
 func (r *TestHermezDbReaderWrapper) GetEffectiveGasPricePercentage(txHash common.Hash) (uint8, error) {
-	panic("not implemented") // TODO: Implement
+	panic("not implemented")
 }
 
 func (r *TestHermezDbReaderWrapper) GetStateRoot(l2BlockNo uint64) (common.Hash, error) {
-	panic("not implemented") // TODO: Implement
+	panic("not implemented")
 }
 
 func (r *TestHermezDbReaderWrapper) GetBatchNoByL2Block(l2BlockNo uint64) (uint64, error) {
@@ -208,25 +208,25 @@ func (r *TestHermezDbReaderWrapper) GetBatchNoByL2Block(l2BlockNo uint64) (uint6
 }
 
 func (r *TestHermezDbReaderWrapper) GetBatchGlobalExitRoots(fromBatchNum uint64, toBatchNum uint64) (*[]types.GerUpdate, error) {
-	panic("not implemented") // TODO: Implement
+	panic("not implemented")
 }
 
 func (r *TestHermezDbReaderWrapper) GetBlockGlobalExitRoot(l2BlockNo uint64) (common.Hash, error) {
-	panic("not implemented") // TODO: Implement
+	panic("not implemented")
 }
 
 func (r *TestHermezDbReaderWrapper) GetBlockL1BlockHash(l2BlockNo uint64) (common.Hash, error) {
-	panic("not implemented") // TODO: Implement
+	panic("not implemented")
 }
 
 func (r *TestHermezDbReaderWrapper) GetGerForL1BlockHash(l1BlockHash common.Hash) (common.Hash, error) {
-	panic("not implemented") // TODO: Implement
+	panic("not implemented")
 }
 
 func (r *TestHermezDbReaderWrapper) GetIntermediateTxStateRoot(blockNum uint64, txhash common.Hash) (common.Hash, error) {
-	panic("not implemented") // TODO: Implement
+	panic("not implemented")
 }
 
 func (r *TestHermezDbReaderWrapper) GetReusedL1InfoTreeIndex(blockNum uint64) (bool, error) {
-	panic("not implemented") // TODO: Implement
+	panic("not implemented")
 }
