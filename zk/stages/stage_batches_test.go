@@ -15,6 +15,7 @@ import (
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
 	"github.com/ledgerwatch/erigon/smt/pkg/db"
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
+	"github.com/ledgerwatch/erigon/zk/erigon_db"
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
 
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
@@ -97,7 +98,7 @@ func TestUnwindBatches(t *testing.T) {
 	}
 }
 
-func TestfindCommonAncestor(t *testing.T) {
+func Test_FindCommonAncestor(t *testing.T) {
 	blocksCount := 40
 	l2Blocks := createTestL2Blocks(t, blocksCount)
 
@@ -150,6 +151,8 @@ func TestfindCommonAncestor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// ARRANGE
 			testDb, tx := memdb.NewTestTx(t)
+			defer testDb.Close()
+			defer tx.Rollback()
 			err := hermez_db.CreateHermezBuckets(tx)
 			require.NoError(t, err)
 
@@ -157,6 +160,7 @@ func TestfindCommonAncestor(t *testing.T) {
 			require.NoError(t, err)
 
 			hermezDb := hermez_db.NewHermezDb(tx)
+			erigonDb := erigon_db.NewErigonDb(tx)
 
 			dsBlocks := l2Blocks[:tc.dsBlocksCount]
 			dbBlocks := l2Blocks[:tc.dbBlocksCount]
@@ -169,13 +173,9 @@ func TestfindCommonAncestor(t *testing.T) {
 				require.NoError(t, hermezDb.WriteBlockBatch(l2Block.L2BlockNumber, l2Block.BatchNumber))
 				require.NoError(t, rawdb.WriteCanonicalHash(tx, l2Block.L2Blockhash, l2Block.L2BlockNumber))
 			}
-			require.NoError(t, tx.Commit())
-
-			erigonDbReader := NewTestErigonDbReader(context.Background(), testDb)
-			hermezDbReader := NewTestHermezDbReaderWrapper(context.Background(), hermez_db.NewHermezDbReader(tx), testDb)
 
 			// ACT
-			ancestorNum, ancestorHash, err := findCommonAncestor(erigonDbReader, hermezDbReader, dsClient, tc.latestBlockNum)
+			ancestorNum, ancestorHash, err := findCommonAncestor(erigonDb, hermezDb, dsClient, tc.latestBlockNum)
 
 			// ASSERT
 			if tc.expectedError != nil {
