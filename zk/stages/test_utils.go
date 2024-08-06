@@ -6,10 +6,6 @@ import (
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
 )
 
-const (
-	notImplementedStr = "not implemented"
-)
-
 type TestDatastreamClient struct {
 	fullL2Blocks          []types.FullL2Block
 	gerUpdates            []types.GerUpdate
