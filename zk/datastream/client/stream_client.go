@@ -100,6 +100,7 @@ func (c *StreamClient) GetL2BlockChan() chan types.FullL2Block {
 	return c.l2BlockChan
 }
 func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
+	defer c.tryReConnect()
 	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
 
 	bookmarkRaw, err := bookmark.Marshal()
@@ -111,7 +112,16 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 		return nil, err
 	}
 
-	l2Block, _, _, _, _, _, err := c.readFullBlockProto()
+	var l2Block *types.FullL2Block
+
+	for l2Block == nil {
+		l2Block, _, _, _, _, _, err = c.readFullBlockProto()
+	}
+
+	if l2Block.L2BlockNumber != blockNum {
+		return nil, fmt.Errorf("expected block number %d but got %d", blockNum, l2Block.L2BlockNumber)
+	}
+
 	if err != nil {
 		return nil, err
 	}

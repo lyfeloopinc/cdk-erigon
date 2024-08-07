@@ -25,6 +25,7 @@ import (
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
+	"github.com/ledgerwatch/erigon/zk/datastream/client"
 	"github.com/ledgerwatch/erigon/zk/utils"
 	"github.com/ledgerwatch/log/v3"
 )
@@ -164,6 +165,38 @@ func SpawnStageBatches(
 	}
 
 	startSyncTime := time.Now()
+
+	latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
+	if err != nil {
+		return err
+	}
+
+	newDSClient := client.NewClient(ctx, cfg.zkCfg.L2DataStreamerUrl, cfg.zkCfg.DatastreamVersion, cfg.zkCfg.L2DataStreamerTimeout, uint16(latestForkId))
+
+	if err := newDSClient.Start(); err != nil {
+		log.Warn(fmt.Sprintf("Error when starting datastream client, retrying... Error: %s", err))
+		return err
+	}
+
+	highestBlockInDS := stageProgressBlockNo
+	var highestL2Block *types.FullL2Block
+
+	for highestL2Block == nil {
+		highestL2Block, err = newDSClient.GetL2BlockByNumber(highestBlockInDS)
+		if highestL2Block == nil {
+			highestBlockInDS--
+		} else {
+			break
+		}
+	}
+
+	if highestBlockInDS < stageProgressBlockNo {
+		stageProgressBlockNo = highestBlockInDS
+	}
+
+	log.Info("Highest block in datastream", "block", highestBlockInDS)
+	log.Info("Highest block in db", "block", stageProgressBlockNo)
+
 	dsClientProgress := cfg.dsClient.GetProgressAtomic()
 	dsClientProgress.Store(stageProgressBlockNo)
 	// start routine to download blocks and push them in a channel
@@ -312,17 +345,13 @@ LOOP:
 				// check if all the blocks starting from the one coming from data streamer up to the latest block have the same batch number
 				batchNumMismatch := false
 				for i := l2Block.L2BlockNumber; i <= stageProgressBlockNo; i++ {
-					dsBlock, err := cfg.dsClient.GetL2BlockByNumber(i)
-					if err != nil {
-						return err
-					}
-
 					dbBatchNum, err := hermezDb.GetBatchNoByL2Block(i)
 					if err != nil {
 						return err
 					}
 
-					if dsBlock.BatchNumber != dbBatchNum {
+					if l2Block.BatchNumber != dbBatchNum {
+						log.Warn(fmt.Sprintf("[%s] Batch num mismatch detected", logPrefix), "block", i, "ds batch", l2Block.BatchNumber, "db batch", dbBatchNum)
 						batchNumMismatch = true
 						break
 					}
@@ -331,13 +360,39 @@ LOOP:
 				if batchNumMismatch {
 					log.Warn(fmt.Sprintf("[%s] Batch num mismatch detected", logPrefix))
 					// if any of the blocks have different batch number, it means that we need to trigger an unwinding of blocks
-					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
+
+					latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
 					if err != nil {
 						return err
 					}
 
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
-					u.UnwindTo(ancestorBlockNum, ancestorBlockHash)
+					newDSClient := client.NewClient(ctx, cfg.zkCfg.L2DataStreamerUrl, cfg.zkCfg.DatastreamVersion, cfg.zkCfg.L2DataStreamerTimeout, uint16(latestForkId))
+
+					if err := newDSClient.Start(); err != nil {
+						log.Warn(fmt.Sprintf("Error when starting datastream client, retrying... Error: %s", err))
+						return err
+					}
+
+					ancestorBlockNum, _, err := findCommonAncestor(eriDb, hermezDb, newDSClient, l2Block.L2BlockNumber)
+					if err != nil {
+						return err
+					}
+
+					batch, err := hermezDb.GetBatchNoByL2Block(ancestorBlockNum)
+					if err != nil {
+						return err
+					}
+
+					unwindPointBlock, err := hermezDb.GetHighestBlockInBatch(batch - 1)
+					if err != nil {
+						return err
+					}
+
+					stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batch-1)
+
+					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, unwindPointBlock))
+					u.UnwindTo(unwindPointBlock, l2Block.L2Blockhash)
+
 					return nil
 				}
 
@@ -352,6 +407,7 @@ LOOP:
 					return fmt.Errorf("failed to get bad block: %v", err)
 				}
 				u.UnwindTo(l2Block.L2BlockNumber, badBlock)
+				return nil
 			}
 
 			// check for sequential block numbers
