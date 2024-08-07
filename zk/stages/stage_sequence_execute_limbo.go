@@ -67,7 +67,7 @@ func (_this *limboStreamBytesBuilderHelper) add(senderMapKey string, blockNumber
 	return limboStreamBytesGroups
 }
 
-func handleLimbo(batchContext *BatchContext, batchState *BatchState, verifierBundle *legacy_executor_verifier.VerifierBundle) error {
+func handleLimbo(batchContext *BatchContext, verifierBundle *legacy_executor_verifier.VerifierBundle) error {
 	request := verifierBundle.Request
 	legacyVerifier := batchContext.cfg.legacyVerifier
 

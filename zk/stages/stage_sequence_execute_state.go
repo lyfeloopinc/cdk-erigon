@@ -11,6 +11,7 @@ import (
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/eth/stagedsync"
 	"github.com/ledgerwatch/erigon/zk/l1_data"
+	"github.com/ledgerwatch/erigon/zk/l1infotree"
 	zktx "github.com/ledgerwatch/erigon/zk/tx"
 	"github.com/ledgerwatch/erigon/zk/txpool"
 )
@@ -39,7 +40,8 @@ type BatchState struct {
 	batchNumber                   uint64
 	hasExecutorForThisBatch       bool
 	hasAnyTransactionsInThisBatch bool
-	builtBlocks                   []uint64
+	builtBlocksNumbers            []uint64
+	currentBatchRaw               l1infotree.BatchRawV2
 	yieldedTransactions           mapset.Set[[32]byte]
 	blockState                    *BlockState
 	batchL1RecoveryData           *BatchL1RecoveryData
@@ -52,11 +54,14 @@ func newBatchState(forkId, batchNumber uint64, hasExecutorForThisBatch, l1Recove
 		batchNumber:                   batchNumber,
 		hasExecutorForThisBatch:       hasExecutorForThisBatch,
 		hasAnyTransactionsInThisBatch: false,
-		builtBlocks:                   make([]uint64, 0, 128),
+		builtBlocksNumbers:            make([]uint64, 0, 128),
 		yieldedTransactions:           mapset.NewSet[[32]byte](),
 		blockState:                    newBlockState(),
-		batchL1RecoveryData:           nil,
-		limboRecoveryData:             nil,
+		currentBatchRaw: l1infotree.BatchRawV2{
+			Blocks: make([]l1infotree.L2BlockRaw, 0, 128),
+		},
+		batchL1RecoveryData: nil,
+		limboRecoveryData:   nil,
 	}
 
 	if l1Recovery {
@@ -119,8 +124,46 @@ func (bs *BatchState) onAddedTransaction(transaction types.Transaction, receipt 
 	bs.hasAnyTransactionsInThisBatch = true
 }
 
-func (bs *BatchState) onBuiltBlock(blockNumber uint64) {
-	bs.builtBlocks = append(bs.builtBlocks, blockNumber)
+func (bs *BatchState) onBuiltBlock(block *types.Block) {
+	bs.builtBlocksNumbers = append(bs.builtBlocksNumbers, block.NumberU64())
+	bs.builtBlocks = append(bs.builtBlocks, block)
+}
+
+// builds the batch L2 data for AccInputHash
+// requires the last block's time from the previous batch
+func (bs *BatchState) BuildBatchL2Data(lastBlockTime uint64) ([]byte, error) {
+	currentBatchRaw := l1infotree.BatchRawV2{
+		Blocks: make([]l1infotree.L2BlockRaw, 0, len(bs.builtBlocks)),
+	}
+
+	lastBlockTimestamp := lastBlockTime
+	for _, block := range bs.builtBlocks {
+		blockTxs := bs.blockState.builtBlockElemen
+		// encode block
+		blockRaw := l1infotree.L2BlockRaw{
+			ChangeL2BlockHeader: l1infotree.ChangeL2BlockHeader{
+				DeltaTimestamp:  uint32(block.Time() - lastBlockTimestamp),
+				IndexL1InfoTree: block.L1InfotreeIndex,
+			},
+			Transactions: make([]l1infotree.L2TxRaw, 0, len(blockTxs)),
+		}
+
+		for i, tx := range blockTxs {
+			txRaw := l1infotree.L2TxRaw{
+				ForkId:               uint16(forkId),
+				EfficiencyPercentage: effectiveGases[i],
+				Tx:                   &tx,
+			}
+
+			blockRaw.Transactions = append(blockRaw.Transactions, txRaw)
+		}
+
+		currentBatchRaw.Blocks = append(currentBatchRaw.Blocks, blockRaw)
+
+		lastBlockTimestamp = block.Time()
+	}
+
+	return l1infotree.EncodeBatchV2(currentBatchRaw)
 }
 
 // TYPE BATCH L1 RECOVERY DATA

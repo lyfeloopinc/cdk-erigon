@@ -324,7 +324,7 @@ func SpawnSequencingStage(
 		}
 
 		// add a check to the verifier and also check for responses
-		batchState.onBuiltBlock(blockNumber)
+		batchState.onBuiltBlock(block)
 
 		// commit block data here so it is accessible in other threads
 		if errCommitAndStart := sdb.CommitAndStart(); errCommitAndStart != nil {
@@ -332,10 +332,10 @@ func SpawnSequencingStage(
 		}
 		defer sdb.tx.Rollback()
 
-		cfg.legacyVerifier.StartAsyncVerification(batchState.forkId, batchState.batchNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), batchState.builtBlocks, batchState.hasExecutorForThisBatch, batchContext.cfg.zk.SequencerBatchVerificationTimeout)
+		cfg.legacyVerifier.StartAsyncVerification(batchState.forkId, batchState.batchNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), batchState.builtBlocksNumbers, batchState.hasExecutorForThisBatch, batchContext.cfg.zk.SequencerBatchVerificationTimeout)
 
 		// check for new responses from the verifier
-		needsUnwind, err := updateStreamAndCheckRollback(batchContext, batchState, streamWriter, u)
+		needsUnwind, err := updateStreamAndCheckRollback(batchContext, batchState.isL1Recovery(), streamWriter, u)
 
 		// lets commit everything after updateStreamAndCheckRollback no matter of its result
 		if errCommitAndStart := sdb.CommitAndStart(); errCommitAndStart != nil {
@@ -350,12 +350,12 @@ func SpawnSequencingStage(
 	}
 
 	cfg.legacyVerifier.Wait()
-	needsUnwind, err := updateStreamAndCheckRollback(batchContext, batchState, streamWriter, u)
+	needsUnwind, err := updateStreamAndCheckRollback(batchContext, batchState.isL1Recovery(), streamWriter, u)
 	if err != nil || needsUnwind {
 		return err
 	}
 
-	if err = runBatchLastSteps(batchContext, batchState.batchNumber, block.NumberU64(), batchCounters); err != nil {
+	if err = runBatchLastSteps(batchContext, batchState, block.NumberU64(), batchCounters); err != nil {
 		return err
 	}
 

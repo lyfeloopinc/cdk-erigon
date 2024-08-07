@@ -83,7 +83,7 @@ func doCheckForBadBatch(batchContext *BatchContext, batchState *BatchState, this
 
 func updateStreamAndCheckRollback(
 	batchContext *BatchContext,
-	batchState *BatchState,
+	isL1Recovery bool,
 	streamWriter *SequencerBatchStreamWriter,
 	u stagedsync.Unwinder,
 ) (bool, error) {
@@ -110,11 +110,11 @@ func updateStreamAndCheckRollback(
 		// If we are here in L1RecoveryMode then let's stop everything by using an infinite loop because something is quite wrong
 		// If we are here in Default mode and limbo is disabled then again do the same as in L1RecoveryMode
 		// If we are here in Default mode and limbo is enabled then continue normal flow
-		if batchState.isL1Recovery() || !batchContext.cfg.zk.Limbo {
+		if isL1Recovery || !batchContext.cfg.zk.Limbo {
 			infiniteLoop(verifierBundle.Request.BatchNumber)
 		}
 
-		if err = handleLimbo(batchContext, batchState, verifierBundle); err != nil {
+		if err = handleLimbo(batchContext, verifierBundle); err != nil {
 			return false, err
 		}
 
@@ -139,10 +139,11 @@ func updateStreamAndCheckRollback(
 
 func runBatchLastSteps(
 	batchContext *BatchContext,
-	thisBatch uint64,
+	batchState *BatchState,
 	blockNumber uint64,
 	batchCounters *vm.BatchCounterCollector,
 ) error {
+	thisBatch := batchState.batchNumber
 	l1InfoIndex, err := batchContext.sdb.hermezDb.GetBlockL1InfoTreeIndex(blockNumber)
 	if err != nil {
 		return err
