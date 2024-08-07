@@ -116,14 +116,13 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 
 	for l2Block == nil {
 		l2Block, _, _, _, _, _, err = c.readFullBlockProto()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if l2Block.L2BlockNumber != blockNum {
 		return nil, fmt.Errorf("expected block number %d but got %d", blockNum, l2Block.L2BlockNumber)
-	}
-
-	if err != nil {
-		return nil, err
 	}
 
 	return l2Block, nil
