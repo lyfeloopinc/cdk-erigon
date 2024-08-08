@@ -309,7 +309,6 @@ func (api *ZkEvmAPIImpl) GetBatchDataByNumbers(ctx context.Context, batchNumbers
 			return nil, err
 		}
 
-		// todo: max - take out shared logic with getBatchByNumber
 		// collect blocks in batch
 		var batchBlocks []*eritypes.Block
 		var batchTxs []eritypes.Transaction
@@ -405,7 +404,7 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 	hermezDb := hermez_db.NewHermezDbReader(tx)
 
 	// use inbuilt rpc.BlockNumber type to implement the 'latest' behaviour
-	// highest block/batch tied to last block synced
+	// the highest block/batch tied to last block synced
 	// unless the node is still syncing - in which case 'current block' is used
 	// this is the batch number of stage progress of the Finish stage
 
@@ -424,7 +423,7 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 	if err != nil {
 		return nil, err
 	}
-	if syncing != nil && syncing != false {
+	if syncing != nil && syncing.(bool) != false {
 		bn := syncing.(map[string]interface{})["currentBlock"]
 		highestBatchNo, err = hermezDb.GetBatchNoByL2Block(uint64(bn.(hexutil.Uint64)))
 	}
@@ -675,6 +674,34 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 			batch.GlobalExitRoot = common.Hash{}
 			batch.MainnetExitRoot = common.Hash{}
 			batch.RollupExitRoot = common.Hash{}
+		}
+
+		// now the MER/RER
+		if batch.GlobalExitRoot != (common.Hash{}) {
+
+		ROOTLOOP:
+			for {
+				infoTreeUpdate, err := hermezDb.GetL1InfoTreeUpdateByGer(prevBatchGer)
+				if err != nil {
+					return nil, err
+				}
+				fmt.Println("infoTreeUpdate", infoTreeUpdate)
+				if infoTreeUpdate != nil {
+					batch.MainnetExitRoot = infoTreeUpdate.MainnetExitRoot
+					batch.RollupExitRoot = infoTreeUpdate.RollupExitRoot
+					break ROOTLOOP
+				}
+
+				prevBatchNo--
+				prevBatchHighestBlock, err = hermezDb.GetHighestBlockInBatch(prevBatchNo)
+				if err != nil {
+					return nil, err
+				}
+				prevBatchGer, _, err = hermezDb.GetLastBlockGlobalExitRoot(prevBatchHighestBlock)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 
