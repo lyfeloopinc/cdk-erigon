@@ -501,6 +501,11 @@ var (
 		Usage: "Strictly resequence the rolledback batches",
 		Value: true,
 	}
+	SequencerResequenceReuseL1InfoIndex = cli.BoolFlag{
+		Name:  "zkevm.sequencer-resequence-reuse-l1-info-index",
+		Usage: "Reuse the L1 info index for resequencing",
+		Value: true,
+	}
 	ExecutorUrls = cli.StringFlag{
 		Name:  "zkevm.executor-urls",
 		Usage: "A comma separated list of grpc addresses that host executors",

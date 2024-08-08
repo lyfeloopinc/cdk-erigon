@@ -244,7 +244,7 @@ func prepareL1AndInfoTreeRelatedStuff(
 	sdb *stageDb,
 	batchState *BatchState,
 	proposedTimestamp uint64,
-	resequenceStrict bool,
+	reuseL1InfoIndex bool,
 ) (
 	infoTreeIndexProgress uint64,
 	l1TreeUpdate *zktypes.L1InfoTreeUpdate,
@@ -263,11 +263,16 @@ func prepareL1AndInfoTreeRelatedStuff(
 		return
 	}
 
-	if batchState.isL1Recovery() || (batchState.isResequence() && resequenceStrict) {
+	if batchState.isL1Recovery() || (batchState.isResequence() && reuseL1InfoIndex) {
 		if batchState.isL1Recovery() {
 			l1TreeUpdateIndex = uint64(batchState.blockState.blockL1RecoveryData.L1InfoTreeIndex)
 		} else {
-			l1TreeUpdateIndex = uint64(batchState.resequenceBatchJob.CurrentBlock().L1InfoTreeIndex)
+			// Resequence mode:
+			// If we are resequencing at the beginning (AtNewBlockBoundary->true) of a rolledback block, we need to reuse the l1TreeUpdateIndex from the block.
+			// If we are in the middle of a block (AtNewBlockBoundary -> false), it means the original block will be requenced into multiple blocks, so we will leave l1TreeUpdateIndex as 0 for the rest of blocks.
+			if batchState.resequenceBatchJob.AtNewBlockBoundary() {
+				l1TreeUpdateIndex = uint64(batchState.resequenceBatchJob.CurrentBlock().L1InfoTreeIndex)
+			}
 		}
 		if l1TreeUpdate, err = sdb.hermezDb.GetL1InfoTreeUpdate(l1TreeUpdateIndex); err != nil {
 			return
@@ -288,6 +293,10 @@ func prepareL1AndInfoTreeRelatedStuff(
 	if l1TreeUpdate != nil && l1TreeUpdateIndex > 0 {
 		l1BlockHash = l1TreeUpdate.ParentHash
 		ger = l1TreeUpdate.GER
+	}
+
+	if batchState.isResequence() && l1TreeUpdateIndex == 0 {
+		shouldWriteGerToContract = false
 	}
 
 	return

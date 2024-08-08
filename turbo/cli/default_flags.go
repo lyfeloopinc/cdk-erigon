@@ -197,6 +197,7 @@ var DefaultFlags = []cli.Flag{
 	&utils.SequencerHaltOnBatchNumber,
 	&utils.SequencerResequence,
 	&utils.SequencerResequenceStrict,
+	&utils.SequencerResequenceReuseL1InfoIndex,
 	&utils.ExecutorUrls,
 	&utils.ExecutorStrictMode,
 	&utils.ExecutorRequestTimeout,
