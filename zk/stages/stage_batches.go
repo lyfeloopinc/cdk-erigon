@@ -375,24 +375,16 @@ LOOP:
 					log.Warn(fmt.Sprintf("[%s] Skipping block %d, already processed", logPrefix, l2Block.L2BlockNumber))
 				}
 
-				// check if all the blocks starting from the one coming from data streamer up to the latest block have the same batch number
-				batchNumMismatch := false
-				for i := l2Block.L2BlockNumber; i <= stageProgressBlockNo; i++ {
-					dbBatchNum, err := hermezDb.GetBatchNoByL2Block(i)
-					if err != nil {
-						return err
-					}
-
-					if l2Block.BatchNumber != dbBatchNum {
-						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected", logPrefix),
-							"block", i, "ds batch", l2Block.BatchNumber, "db batch", dbBatchNum)
-						batchNumMismatch = true
-						break
-					}
+				dbBatchNum, err := hermezDb.GetBatchNoByL2Block(l2Block.L2BlockNumber)
+				if err != nil {
+					return err
 				}
 
-				if batchNumMismatch {
-					// if any of the blocks have different batch number, it means that we need to trigger an unwinding of blocks
+				if l2Block.BatchNumber != dbBatchNum {
+					log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected", logPrefix),
+						"block", l2Block.L2BlockNumber, "ds batch", l2Block.BatchNumber, "db batch", dbBatchNum)
+
+					// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
 					latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
 					if err != nil {
 						return err
