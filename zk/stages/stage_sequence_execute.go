@@ -142,7 +142,6 @@ func SpawnSequencingStage(
 		if batchState.isL1Recovery() {
 			didLoadedAnyDataForRecovery := batchState.loadBlockL1RecoveryData(blockNumber - (executionAt + 1))
 			if !didLoadedAnyDataForRecovery {
-				runLoopBlocks = false
 				break
 			}
 		}
