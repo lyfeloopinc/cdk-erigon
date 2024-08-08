@@ -419,12 +419,12 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 	}
 
 	// check sync status of node
-	syncing, err := api.ethApi.Syncing(ctx)
+	syncStatus, err := api.ethApi.Syncing(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if syncing != nil && syncing.(bool) != false {
-		bn := syncing.(map[string]interface{})["currentBlock"]
+	if _, ok := syncStatus.(bool); !ok {
+		bn := syncStatus.(map[string]interface{})["currentBlock"]
 		highestBatchNo, err = hermezDb.GetBatchNoByL2Block(uint64(bn.(hexutil.Uint64)))
 	}
 	if batchNumber > rpc.BlockNumber(highestBatchNo) {
