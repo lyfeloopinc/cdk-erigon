@@ -18,6 +18,7 @@ type TestDatastreamClient struct {
 	errChan               chan error
 	batchStartChan        chan types.BatchStart
 	batchEndChan          chan types.BatchEnd
+	isStarted             bool
 }
 
 func NewTestDatastreamClient(fullL2Blocks []types.FullL2Block, gerUpdates []types.GerUpdate) *TestDatastreamClient {
@@ -94,4 +95,13 @@ func (c *TestDatastreamClient) GetStreamingAtomic() *atomic.Bool {
 
 func (c *TestDatastreamClient) GetProgressAtomic() *atomic.Uint64 {
 	return &c.progress
+}
+
+func (c *TestDatastreamClient) Start() error {
+	c.isStarted = true
+	return nil
+}
+
+func (c *TestDatastreamClient) Stop() {
+	c.isStarted = false
 }

@@ -48,12 +48,20 @@ func TestUnwindBatches(t *testing.T) {
 	require.NoError(t, err)
 
 	dsClient := NewTestDatastreamClient(fullL2Blocks, gerUpdates)
-	cfg := StageBatchesCfg(db1, dsClient, &ethconfig.Zk{})
+
+	tmpDSClientCreator := func(_ context.Context, _ *ethconfig.Zk, _ uint16) (DatastreamClient, error) {
+		return NewTestDatastreamClient(fullL2Blocks, gerUpdates), nil
+	}
+	cfg := StageBatchesCfg(db1, dsClient, &ethconfig.Zk{}, WithDSClientCreator(tmpDSClientCreator))
 
 	s := &stagedsync.StageState{ID: stages.Batches, BlockNumber: 0}
 	u := &stagedsync.Sync{}
 	us := &stagedsync.UnwindState{ID: stages.Batches, UnwindPoint: 0, CurrentBlockNumber: uint64(currentBlockNumber)}
 	err = stages.SaveStageProgress(tx, stages.L1VerificationsBatchNo, 20)
+	require.NoError(t, err)
+	err = stages.SaveStageProgress(tx, stages.Batches, 5)
+	require.NoError(t, err)
+	err = stages.SaveStageProgress(tx, stages.Execution, uint64(currentBlockNumber))
 	require.NoError(t, err)
 
 	// get bucket sizes pre inserts

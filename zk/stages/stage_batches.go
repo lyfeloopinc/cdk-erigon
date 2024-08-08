@@ -92,21 +92,41 @@ type DatastreamClient interface {
 	GetStreamingAtomic() *atomic.Bool
 	GetProgressAtomic() *atomic.Uint64
 	EnsureConnected() (bool, error)
+	Start() error
+	Stop()
 }
+
+type dsClientCreatorHandler func(context.Context, *ethconfig.Zk, uint16) (DatastreamClient, error)
 
 type BatchesCfg struct {
-	db                  kv.RwDB
-	blockRoutineStarted bool
-	dsClient            DatastreamClient
-	zkCfg               *ethconfig.Zk
+	db                      kv.RwDB
+	blockRoutineStarted     bool
+	dsClient                DatastreamClient
+	temporalDSClientCreator dsClientCreatorHandler
+	zkCfg                   *ethconfig.Zk
 }
 
-func StageBatchesCfg(db kv.RwDB, dsClient DatastreamClient, zkCfg *ethconfig.Zk) BatchesCfg {
-	return BatchesCfg{
+func StageBatchesCfg(db kv.RwDB, dsClient DatastreamClient, zkCfg *ethconfig.Zk, options ...Option) BatchesCfg {
+	cfg := BatchesCfg{
 		db:                  db,
 		blockRoutineStarted: false,
 		dsClient:            dsClient,
 		zkCfg:               zkCfg,
+	}
+
+	for _, opt := range options {
+		opt(&cfg)
+	}
+
+	return cfg
+}
+
+type Option func(*BatchesCfg)
+
+// WithDSClientCreator is a functional option to set the datastream client creator callback.
+func WithDSClientCreator(handler dsClientCreatorHandler) Option {
+	return func(c *BatchesCfg) {
+		c.temporalDSClientCreator = handler
 	}
 }
 
@@ -171,7 +191,16 @@ func SpawnStageBatches(
 		return err
 	}
 
-	newDSClient, cleanup, err := newStreamClient(ctx, cfg.zkCfg, latestForkId)
+	var (
+		tmpDSClient DatastreamClient
+		cleanup     func()
+	)
+
+	if cfg.temporalDSClientCreator != nil {
+		tmpDSClient, err = cfg.temporalDSClientCreator(ctx, cfg.zkCfg, uint16(latestForkId))
+	} else {
+		tmpDSClient, cleanup, err = newStreamClient(ctx, cfg.zkCfg, latestForkId)
+	}
 	defer cleanup()
 	if err != nil {
 		log.Warn(fmt.Sprintf("[%s] Error when starting datastream client. Error: %s", logPrefix, err))
@@ -182,10 +211,11 @@ func SpawnStageBatches(
 	var highestL2Block *types.FullL2Block
 
 	for highestL2Block == nil {
-		highestL2Block, err = newDSClient.GetL2BlockByNumber(highestBlockInDS)
+		highestL2Block, err = tmpDSClient.GetL2BlockByNumber(highestBlockInDS)
 		if err != nil {
 			return err
 		}
+
 		if highestL2Block == nil {
 			highestBlockInDS--
 		} else {
@@ -368,19 +398,29 @@ LOOP:
 						return err
 					}
 
-					newDSClient, cleanup, err := newStreamClient(ctx, cfg.zkCfg, latestForkId)
-					defer cleanup()
+					var (
+						tmpDSClient DatastreamClient
+						cleanup     func()
+					)
+
+					if cfg.temporalDSClientCreator != nil {
+						tmpDSClient, err = cfg.temporalDSClientCreator(ctx, cfg.zkCfg, uint16(latestForkId))
+					} else {
+						tmpDSClient, cleanup, err = newStreamClient(ctx, cfg.zkCfg, latestForkId)
+						defer cleanup()
+					}
+
 					if err != nil {
 						log.Warn(fmt.Sprintf("[%s] Error when starting datastream client... Error: %s", logPrefix, err))
 						return err
 					}
 
-					ancestorBlockNum, _, err := findCommonAncestor(eriDb, hermezDb, newDSClient, l2Block.L2BlockNumber)
+					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, tmpDSClient, l2Block.L2BlockNumber)
 					if err != nil {
 						return err
 					}
 
-					unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum)
+					unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
 					if err != nil {
 						return err
 					}
@@ -451,12 +491,12 @@ LOOP:
 					// unwind/rollback blocks until the latest common ancestor block
 					log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, l2Block.L2BlockNumber),
 						"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
-					ancestorBlockNum, _, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
+					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
 					if err != nil {
 						return err
 					}
 
-					unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum)
+					unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
 					if err != nil {
 						return err
 					}
@@ -1072,10 +1112,14 @@ func findCommonAncestor(
 }
 
 // resolveUnwindBlock resolves the unwind block as the latest block in the previous batch, relative to the found ancestor block.
-func resolveUnwindBlock(eriDb erigon_db.ReadOnlyErigonDb, hermezDb state.ReadOnlyHermezDb, ancestorBlockNum uint64) (uint64, common.Hash, uint64, error) {
+func resolveUnwindBlock(eriDb erigon_db.ReadOnlyErigonDb, hermezDb state.ReadOnlyHermezDb, ancestorBlockNum uint64, ancestorBlockHash common.Hash) (uint64, common.Hash, uint64, error) {
 	batchNum, err := hermezDb.GetBatchNoByL2Block(ancestorBlockNum)
 	if err != nil {
 		return 0, emptyHash, 0, err
+	}
+
+	if batchNum == 0 {
+		return ancestorBlockNum, ancestorBlockHash, batchNum, nil
 	}
 
 	unwindBlockNum, err := hermezDb.GetHighestBlockInBatch(batchNum - 1)
