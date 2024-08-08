@@ -381,10 +381,10 @@ LOOP:
 				}
 
 				if l2Block.BatchNumber != dbBatchNum {
+					// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
 					log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected", logPrefix),
 						"block", l2Block.L2BlockNumber, "ds batch", l2Block.BatchNumber, "db batch", dbBatchNum)
 
-					// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
 					latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
 					if err != nil {
 						return err
@@ -418,7 +418,10 @@ LOOP:
 					}
 
 					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
-					stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
+					err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
+					if err != nil {
+						return err
+					}
 					u.UnwindTo(unwindBlockNum, unwindBlockHash)
 
 					return nil
@@ -494,7 +497,10 @@ LOOP:
 					}
 
 					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
-					stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
+					err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
+					if err != nil {
+						return err
+					}
 					u.UnwindTo(unwindBlockNum, unwindBlockHash)
 					return nil
 				}
