@@ -404,7 +404,7 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 	hermezDb := hermez_db.NewHermezDbReader(tx)
 
 	// use inbuilt rpc.BlockNumber type to implement the 'latest' behaviour
-	// the highest block/batch tied to last block synced
+	// the highest block/batch is tied to last block synced
 	// unless the node is still syncing - in which case 'current block' is used
 	// this is the batch number of stage progress of the Finish stage
 
@@ -607,27 +607,6 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 	}
 	if ver != nil {
 		batch.VerifyBatchTxHash = &ver.L1TxHash
-
-		verificationBatch := ver.BatchNo
-		verifiedBatchHighestBlock, err := hermezDb.GetHighestBlockInBatch(verificationBatch)
-		if err != nil {
-			return nil, err
-		}
-
-		verifiedBatchGer, err := hermezDb.GetBlockGlobalExitRoot(verifiedBatchHighestBlock)
-		if err != nil {
-			return nil, err
-		}
-
-		// exit roots (MainnetExitRoot, RollupExitRoot)
-		infoTreeUpdate, err := hermezDb.GetL1InfoTreeUpdateByGer(verifiedBatchGer)
-		if err != nil {
-			return nil, err
-		}
-		if infoTreeUpdate != nil {
-			batch.MainnetExitRoot = infoTreeUpdate.MainnetExitRoot
-			batch.RollupExitRoot = infoTreeUpdate.RollupExitRoot
-		}
 	}
 
 	itu, err := hermezDb.GetL1InfoTreeUpdateByGer(batchGer)
@@ -684,33 +663,6 @@ func (api *ZkEvmAPIImpl) GetBatchByNumber(ctx context.Context, batchNumber rpc.B
 			batch.MainnetExitRoot = common.Hash{}
 			batch.RollupExitRoot = common.Hash{}
 		}
-
-		//// Find MER/RER if missing
-		//if batch.RollupExitRoot == (common.Hash{}) || batch.MainnetExitRoot == (common.Hash{}) {
-		//
-		//	for {
-		//		infoTreeUpdate, err := hermezDb.GetL1InfoTreeUpdateByGer(prevBatchGer)
-		//		if err != nil {
-		//			return nil, err
-		//		}
-		//		fmt.Println("infoTreeUpdate", infoTreeUpdate)
-		//		if infoTreeUpdate != nil {
-		//			batch.MainnetExitRoot = infoTreeUpdate.MainnetExitRoot
-		//			batch.RollupExitRoot = infoTreeUpdate.RollupExitRoot
-		//			break
-		//		}
-		//
-		//		prevBatchNo--
-		//		prevBatchHighestBlock, err = hermezDb.GetHighestBlockInBatch(prevBatchNo)
-		//		if err != nil {
-		//			return nil, err
-		//		}
-		//		prevBatchGer, _, err = hermezDb.GetLastBlockGlobalExitRoot(prevBatchHighestBlock)
-		//		if err != nil {
-		//			return nil, err
-		//		}
-		//	}
-		//}
 	}
 
 	return populateBatchDetails(batch)
