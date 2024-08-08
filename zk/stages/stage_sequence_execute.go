@@ -120,6 +120,13 @@ func SpawnSequencingStage(
 		}
 	}
 
+	// add previous block data to the batch state if batch is partially processed
+	if isLastBatchPariallyProcessed {
+		if err := batchState.addPartiallyProcessedBatchData(batchContext); err != nil {
+			return err
+		}
+	}
+
 	batchTicker, logTicker, blockTicker := prepareTickers(batchContext.cfg)
 	defer batchTicker.Stop()
 	defer logTicker.Stop()
@@ -140,11 +147,6 @@ func SpawnSequencingStage(
 			}
 		}
 
-		l1InfoIndex, err := sdb.hermezDb.GetBlockL1InfoTreeIndex(blockNumber - 1)
-		if err != nil {
-			return err
-		}
-
 		header, parentBlock, err := prepareHeader(sdb.tx, blockNumber-1, batchState.blockState.getDeltaTimestamp(), batchState.getBlockHeaderForcedTimestamp(), batchState.forkId, batchState.getCoinbase(&cfg))
 		if err != nil {
 			return err
@@ -158,7 +160,12 @@ func SpawnSequencingStage(
 		// timer: evm + smt
 		t := utils.StartTimer("stage_sequence_execute", "evm", "smt")
 
-		overflowOnNewBlock, err := batchCounters.StartNewBlock(l1InfoIndex != 0)
+		infoTreeIndexProgress, l1TreeUpdate, l1TreeUpdateIndex, l1BlockHash, ger, shouldWriteGerToContract, err := prepareL1AndInfoTreeRelatedStuff(sdb, batchState, header.Time)
+		if err != nil {
+			return err
+		}
+
+		overflowOnNewBlock, err := batchCounters.StartNewBlock(l1TreeUpdateIndex != 0)
 		if err != nil {
 			return err
 		}
@@ -166,15 +173,10 @@ func SpawnSequencingStage(
 			break
 		}
 
-		infoTreeIndexProgress, l1TreeUpdate, l1TreeUpdateIndex, l1BlockHash, ger, shouldWriteGerToContract, err := prepareL1AndInfoTreeRelatedStuff(sdb, batchState, header.Time)
-		if err != nil {
-			return err
-		}
-
 		ibs := state.New(sdb.stateReader)
 		getHashFn := core.GetHashFn(header, func(hash common.Hash, number uint64) *types.Header { return rawdb.ReadHeader(sdb.tx, hash, number) })
 		blockContext := core.NewEVMBlockContext(header, getHashFn, cfg.engine, &cfg.zk.AddressSequencer, parentBlock.ExcessDataGas())
-		batchState.blockState.builtBlockElements.resetBlockBuildingArrays()
+		batchState.resetBlockState(header.Number.Uint64(), uint32(header.Time-parentBlock.Time()))
 
 		parentRoot := parentBlock.Root()
 		if err = handleStateForNewBlockStarting(batchContext, ibs, blockNumber, batchState.batchNumber, header.Time, &parentRoot, l1TreeUpdate, shouldWriteGerToContract); err != nil {
@@ -227,7 +229,7 @@ func SpawnSequencingStage(
 
 					// The copying of this structure is intentional
 					backupDataSizeChecker := *blockDataSizeChecker
-					receipt, execResult, anyOverflow, err := attemptAddTransaction(cfg, sdb, ibs, batchCounters, &blockContext, header, transaction, effectiveGas, batchState.isL1Recovery(), batchState.forkId, l1InfoIndex, &backupDataSizeChecker)
+					receipt, execResult, anyOverflow, err := attemptAddTransaction(cfg, sdb, ibs, batchCounters, &blockContext, header, transaction, effectiveGas, batchState.isL1Recovery(), batchState.forkId, l1TreeUpdateIndex, &backupDataSizeChecker)
 					if err != nil {
 						if batchState.isLimboRecovery() {
 							panic("limbo transaction has already been executed once so they must not fail while re-executing")
@@ -324,7 +326,7 @@ func SpawnSequencingStage(
 		}
 
 		// add a check to the verifier and also check for responses
-		batchState.onBuiltBlock(block)
+		batchState.onBuiltBlock(block, uint32(l1TreeUpdateIndex))
 
 		// commit block data here so it is accessible in other threads
 		if errCommitAndStart := sdb.CommitAndStart(); errCommitAndStart != nil {

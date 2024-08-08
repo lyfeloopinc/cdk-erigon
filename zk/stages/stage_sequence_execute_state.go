@@ -8,6 +8,7 @@ import (
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/ledgerwatch/erigon/core"
+	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/eth/stagedsync"
 	"github.com/ledgerwatch/erigon/zk/l1_data"
@@ -56,7 +57,7 @@ func newBatchState(forkId, batchNumber uint64, hasExecutorForThisBatch, l1Recove
 		hasAnyTransactionsInThisBatch: false,
 		builtBlocksNumbers:            make([]uint64, 0, 128),
 		yieldedTransactions:           mapset.NewSet[[32]byte](),
-		blockState:                    newBlockState(),
+		blockState:                    nil,
 		currentBatchRaw: l1infotree.BatchRawV2{
 			Blocks: make([]l1infotree.L2BlockRaw, 0, 128),
 		},
@@ -74,6 +75,10 @@ func newBatchState(forkId, batchNumber uint64, hasExecutorForThisBatch, l1Recove
 	}
 
 	return batchState
+}
+
+func (bs *BatchState) resetBlockState(blockNumber uint64, deltaTimestamp uint32) {
+	bs.blockState = newBlockState(blockNumber, deltaTimestamp)
 }
 
 func (bs *BatchState) isL1Recovery() bool {
@@ -124,46 +129,85 @@ func (bs *BatchState) onAddedTransaction(transaction types.Transaction, receipt 
 	bs.hasAnyTransactionsInThisBatch = true
 }
 
-func (bs *BatchState) onBuiltBlock(block *types.Block) {
+func (bs *BatchState) onBuiltBlock(block *types.Block, l1InfotreeIndex uint32) {
 	bs.builtBlocksNumbers = append(bs.builtBlocksNumbers, block.NumberU64())
-	bs.builtBlocks = append(bs.builtBlocks, block)
+
+	bs.addBlockL2Data(block, l1InfotreeIndex)
+}
+
+func (bs *BatchState) addBlockL2Data(block *types.Block, l1InfotreeIndex uint32) {
+	blockElements := bs.blockState.builtBlockElements
+	blockTxs := blockElements.transactions
+
+	blockRaw := createBlockRaw(bs.blockState.deltaTimestamp, l1InfotreeIndex, uint16(bs.forkId), blockTxs, blockElements.effectiveGases)
+
+	bs.currentBatchRaw.Blocks = append(bs.currentBatchRaw.Blocks, *blockRaw)
+}
+
+func (bs *BatchState) addPartiallyProcessedBatchData(batchContext *BatchContext) error {
+	blockNumbers, err := batchContext.sdb.hermezDb.GetL2BlockNosByBatch(bs.batchNumber)
+	if err != nil {
+		return err
+	}
+	// get last block from rpevious batch for delta timestamp
+	lastBlockInPrevBatch, err := batchContext.sdb.hermezDb.GetHighestBlockInBatch(bs.batchNumber - 1)
+	if err != nil {
+		return err
+	}
+	parentBlock, err := rawdb.ReadBlockByNumber(batchContext.sdb.tx, lastBlockInPrevBatch)
+	if err != nil {
+		return err
+	}
+	for _, blockNum := range blockNumbers {
+		l1InfotreeIndex, err := batchContext.sdb.hermezDb.GetBlockL1InfoTreeIndex(blockNum)
+		if err != nil {
+			return err
+		}
+		block, err := rawdb.ReadBlockByNumber(batchContext.sdb.tx, blockNum)
+		txs := block.Transactions()
+		effectiveGasses := make([]uint8, len(txs))
+		for i, tx := range txs {
+			effectiveGasForTx, err := batchContext.sdb.hermezDb.GetEffectiveGasPricePercentage(tx.Hash())
+			if err != nil {
+				return err
+			}
+			effectiveGasses[i] = effectiveGasForTx
+		}
+
+		blockRaw := createBlockRaw(uint32(parentBlock.Time()-block.Time()), uint32(l1InfotreeIndex), uint16(bs.forkId), txs, effectiveGasses)
+		bs.currentBatchRaw.Blocks = append(bs.currentBatchRaw.Blocks, *blockRaw)
+		parentBlock = block
+	}
+
+	return nil
+}
+
+func createBlockRaw(deltaTimestamp, l1InfotreeIndex uint32, forkId uint16, blockTxs []types.Transaction, effectiveGases []uint8) *l1infotree.L2BlockRaw {
+	blockRaw := l1infotree.L2BlockRaw{
+		ChangeL2BlockHeader: l1infotree.ChangeL2BlockHeader{
+			DeltaTimestamp:  deltaTimestamp,
+			IndexL1InfoTree: l1InfotreeIndex,
+		},
+		Transactions: make([]l1infotree.L2TxRaw, 0, len(blockTxs)),
+	}
+
+	for i, tx := range blockTxs {
+		txRaw := l1infotree.L2TxRaw{
+			ForkId:               forkId,
+			EfficiencyPercentage: effectiveGases[i],
+			Tx:                   &tx,
+		}
+
+		blockRaw.Transactions = append(blockRaw.Transactions, txRaw)
+	}
+
+	return &blockRaw
 }
 
 // builds the batch L2 data for AccInputHash
 // requires the last block's time from the previous batch
-func (bs *BatchState) BuildBatchL2Data(lastBlockTime uint64) ([]byte, error) {
-	currentBatchRaw := l1infotree.BatchRawV2{
-		Blocks: make([]l1infotree.L2BlockRaw, 0, len(bs.builtBlocks)),
-	}
-
-	lastBlockTimestamp := lastBlockTime
-	for _, block := range bs.builtBlocks {
-		blockTxs := bs.blockState.builtBlockElemen
-		// encode block
-		blockRaw := l1infotree.L2BlockRaw{
-			ChangeL2BlockHeader: l1infotree.ChangeL2BlockHeader{
-				DeltaTimestamp:  uint32(block.Time() - lastBlockTimestamp),
-				IndexL1InfoTree: block.L1InfotreeIndex,
-			},
-			Transactions: make([]l1infotree.L2TxRaw, 0, len(blockTxs)),
-		}
-
-		for i, tx := range blockTxs {
-			txRaw := l1infotree.L2TxRaw{
-				ForkId:               uint16(forkId),
-				EfficiencyPercentage: effectiveGases[i],
-				Tx:                   &tx,
-			}
-
-			blockRaw.Transactions = append(blockRaw.Transactions, txRaw)
-		}
-
-		currentBatchRaw.Blocks = append(currentBatchRaw.Blocks, blockRaw)
-
-		lastBlockTimestamp = block.Time()
-	}
-
-	return l1infotree.EncodeBatchV2(currentBatchRaw)
+func (bs *BatchState) BuildBatchL2Data() ([]byte, error) {
+	return l1infotree.EncodeBatchV2(&bs.currentBatchRaw)
 }
 
 // TYPE BATCH L1 RECOVERY DATA
@@ -234,13 +278,15 @@ func newLimboRecoveryData(limboHeaderTimestamp uint64, limboTxHash *common.Hash)
 
 // TYPE BLOCK STATE
 type BlockState struct {
+	blockNumber              uint64
+	deltaTimestamp           uint32
 	transactionsForInclusion []types.Transaction
 	builtBlockElements       BuiltBlockElements
 	blockL1RecoveryData      *zktx.DecodedBatchL2Data
 }
 
-func newBlockState() *BlockState {
-	return &BlockState{}
+func newBlockState(blockNumber uint64, deltaTimestamp uint32) *BlockState {
+	return &BlockState{blockNumber: blockNumber, deltaTimestamp: deltaTimestamp}
 }
 
 func (bs *BlockState) hasAnyTransactionForInclusion() bool {

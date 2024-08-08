@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/vm"
 	"github.com/ledgerwatch/erigon/eth/stagedsync"
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
+	"github.com/ledgerwatch/erigon/zk/l1infotree"
 	"github.com/ledgerwatch/erigon/zk/utils"
 	"github.com/ledgerwatch/log/v3"
 )
@@ -183,6 +185,31 @@ func runBatchLastSteps(
 	}
 	blockRoot := block.Root()
 	if err = batchContext.cfg.datastreamServer.WriteBatchEnd(batchContext.sdb.hermezDb, thisBatch, &blockRoot, &ler); err != nil {
+		return err
+	}
+
+	// acc input hash stuff
+
+	//get prev batch accinputhash
+	prevBatchAccInputHash, err := batchContext.sdb.hermezDb.GetAccInputHash(thisBatch - 1)
+	if err != nil {
+		return err
+	}
+
+	batchL2Data, err := batchState.BuildBatchL2Data()
+	if err != nil {
+		return err
+	}
+
+	coinbase := batchState.getCoinbase(batchContext.cfg)
+
+	accInputHash, err := l1infotree.CalculateAccInputHash(prevBatchAccInputHash, batchL2Data, l1InfoRoot, batchTimestamp, coinbase, common.Hash{} /* this has value only for the injected batch*/)
+	if err != nil {
+		return fmt.Errorf("calculating acc input hash: %v", err)
+	}
+
+	// write acc input hash to hermezdb
+	if err = batchContext.sdb.hermezDb.WriteAccInputHash(thisBatch, &accInputHash); err != nil {
 		return err
 	}
 

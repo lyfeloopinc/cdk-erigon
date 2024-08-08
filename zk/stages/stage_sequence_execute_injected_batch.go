@@ -1,6 +1,7 @@
 package stages
 
 import (
+	"fmt"
 	"math"
 
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/core/vm"
 	"github.com/ledgerwatch/erigon/core/vm/evmtypes"
+	"github.com/ledgerwatch/erigon/zk/l1infotree"
 	zktx "github.com/ledgerwatch/erigon/zk/tx"
 	zktypes "github.com/ledgerwatch/erigon/zk/types"
 	"github.com/ledgerwatch/erigon/zk/utils"
@@ -63,7 +65,7 @@ func processInjectedInitialBatch(
 		return err
 	}
 
-	txn, receipt, execResult, effectiveGas, err := handleInjectedBatch(batchContext, ibs, &blockContext, injected, header, parentBlock, batchState.forkId)
+	txn, receipt, execResult, effectiveGas, accInputHash, err := handleInjectedBatch(batchContext, ibs, &blockContext, injected, header, parentBlock, batchState.forkId)
 	if err != nil {
 		return err
 	}
@@ -80,6 +82,8 @@ func processInjectedInitialBatch(
 		return err
 	}
 
+	batchContext.sdb.hermezDb.WriteAccInputHash(batchState.batchNumber, accInputHash)
+
 	// deleting the partially processed flag
 	return batchContext.sdb.hermezDb.DeleteIsBatchPartiallyProcessed(injectedBatchBatchNumber)
 }
@@ -92,16 +96,16 @@ func handleInjectedBatch(
 	header *types.Header,
 	parentBlock *types.Block,
 	forkId uint64,
-) (*types.Transaction, *types.Receipt, *core.ExecutionResult, uint8, error) {
+) (*types.Transaction, *types.Receipt, *core.ExecutionResult, uint8, *common.Hash, error) {
 	decodedBlocks, err := zktx.DecodeBatchL2Blocks(injected.Transaction, forkId)
 	if err != nil {
-		return nil, nil, nil, 0, err
+		return nil, nil, nil, 0, nil, err
 	}
 	if len(decodedBlocks) == 0 || len(decodedBlocks) > 1 {
-		return nil, nil, nil, 0, errors.New("expected 1 block for the injected batch")
+		return nil, nil, nil, 0, nil, errors.New("expected 1 block for the injected batch")
 	}
 	if len(decodedBlocks[0].Transactions) == 0 {
-		return nil, nil, nil, 0, errors.New("expected 1 transaction in the injected batch")
+		return nil, nil, nil, 0, nil, errors.New("expected 1 transaction in the injected batch")
 	}
 
 	batchCounters := vm.NewBatchCounterCollector(batchContext.sdb.smt.GetDepth(), uint16(forkId), batchContext.cfg.zk.VirtualCountersSmtReduction, batchContext.cfg.zk.ShouldCountersBeUnlimited(false), nil)
@@ -110,8 +114,27 @@ func handleInjectedBatch(
 	effectiveGas := DeriveEffectiveGasPrice(*batchContext.cfg, decodedBlocks[0].Transactions[0])
 	receipt, execResult, _, err := attemptAddTransaction(*batchContext.cfg, batchContext.sdb, ibs, batchCounters, blockContext, header, decodedBlocks[0].Transactions[0], effectiveGas, false, forkId, 0 /* use 0 for l1InfoIndex in injected batch */, nil)
 	if err != nil {
-		return nil, nil, nil, 0, err
+		return nil, nil, nil, 0, nil, err
 	}
 
-	return &decodedBlocks[0].Transactions[0], receipt, execResult, effectiveGas, nil
+	accInputHash, err := calcInjectedAccInputHash(injected, &decodedBlocks[0].Transactions[0], effectiveGas, forkId)
+
+	return &decodedBlocks[0].Transactions[0], receipt, execResult, effectiveGas, &accInputHash, nil
+}
+
+func calcInjectedAccInputHash(injected *zktypes.L1InjectedBatch, transaction *types.Transaction, effectiveGas uint8, forkId uint64) (accinputHash common.Hash, err error) {
+	batchRaw := l1infotree.BatchRawV2{
+		Blocks: []l1infotree.L2BlockRaw{
+			// no block previously - should this be 0 or the block timestamp itself?
+			// use 0 for l1InfoIndex in injected batch
+			*createBlockRaw(0, 0, uint16(forkId), []types.Transaction{*transaction}, []uint8{effectiveGas}),
+		},
+	}
+
+	batchL2Data, err := l1infotree.EncodeBatchV2(&batchRaw)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("failed to encode batch: %w", err)
+	}
+
+	return l1infotree.CalculateAccInputHash(common.Hash{}, batchL2Data, l1InfoRoot, injected.Timestamp, injected.Sequencer, common.Hash{} /* this has value only for the injected batch*/)
 }
