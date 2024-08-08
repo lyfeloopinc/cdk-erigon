@@ -44,6 +44,12 @@ func SpawnSequencingStage(
 	}
 
 	if !cfg.zk.SequencerResequence || lastBatch >= highestBatchInDS {
+		if cfg.zk.SequencerResequence {
+			log.Info(fmt.Sprintf("[%s] Resequencing completed. Please restart sequencer without resequence flag.", s.LogPrefix()))
+			time.Sleep(10 * time.Second)
+			return nil
+		}
+
 		err = sequencingStageStep(s, u, ctx, cfg, historyCfg, quiet, nil)
 		if err != nil {
 			return err
