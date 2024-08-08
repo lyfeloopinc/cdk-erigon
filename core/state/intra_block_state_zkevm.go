@@ -33,6 +33,7 @@ type ReadOnlyHermezDb interface {
 	GetGerForL1BlockHash(l1BlockHash libcommon.Hash) (libcommon.Hash, error)
 	GetIntermediateTxStateRoot(blockNum uint64, txhash libcommon.Hash) (libcommon.Hash, error)
 	GetReusedL1InfoTreeIndex(blockNum uint64) (bool, error)
+	GetHighestBlockInBatch(batchNo uint64) (uint64, error)
 }
 
 func (sdb *IntraBlockState) GetTxCount() (uint64, error) {

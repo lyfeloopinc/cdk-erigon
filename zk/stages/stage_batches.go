@@ -171,10 +171,10 @@ func SpawnStageBatches(
 		return err
 	}
 
-	newDSClient := client.NewClient(ctx, cfg.zkCfg.L2DataStreamerUrl, cfg.zkCfg.DatastreamVersion, cfg.zkCfg.L2DataStreamerTimeout, uint16(latestForkId))
-
-	if err := newDSClient.Start(); err != nil {
-		log.Warn(fmt.Sprintf("Error when starting datastream client, retrying... Error: %s", err))
+	newDSClient, cleanup, err := newStreamClient(ctx, cfg.zkCfg, latestForkId)
+	defer cleanup()
+	if err != nil {
+		log.Warn(fmt.Sprintf("[%s] Error when starting datastream client. Error: %s", logPrefix, err))
 		return err
 	}
 
@@ -183,6 +183,9 @@ func SpawnStageBatches(
 
 	for highestL2Block == nil {
 		highestL2Block, err = newDSClient.GetL2BlockByNumber(highestBlockInDS)
+		if err != nil {
+			return err
+		}
 		if highestL2Block == nil {
 			highestBlockInDS--
 		} else {
@@ -351,25 +354,24 @@ LOOP:
 					}
 
 					if l2Block.BatchNumber != dbBatchNum {
-						log.Warn(fmt.Sprintf("[%s] Batch num mismatch detected", logPrefix), "block", i, "ds batch", l2Block.BatchNumber, "db batch", dbBatchNum)
+						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected", logPrefix),
+							"block", i, "ds batch", l2Block.BatchNumber, "db batch", dbBatchNum)
 						batchNumMismatch = true
 						break
 					}
 				}
 
 				if batchNumMismatch {
-					log.Warn(fmt.Sprintf("[%s] Batch num mismatch detected", logPrefix))
 					// if any of the blocks have different batch number, it means that we need to trigger an unwinding of blocks
-
 					latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
 					if err != nil {
 						return err
 					}
 
-					newDSClient := client.NewClient(ctx, cfg.zkCfg.L2DataStreamerUrl, cfg.zkCfg.DatastreamVersion, cfg.zkCfg.L2DataStreamerTimeout, uint16(latestForkId))
-
-					if err := newDSClient.Start(); err != nil {
-						log.Warn(fmt.Sprintf("Error when starting datastream client, retrying... Error: %s", err))
+					newDSClient, cleanup, err := newStreamClient(ctx, cfg.zkCfg, latestForkId)
+					defer cleanup()
+					if err != nil {
+						log.Warn(fmt.Sprintf("[%s] Error when starting datastream client... Error: %s", logPrefix, err))
 						return err
 					}
 
@@ -378,20 +380,14 @@ LOOP:
 						return err
 					}
 
-					batch, err := hermezDb.GetBatchNoByL2Block(ancestorBlockNum)
+					unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum)
 					if err != nil {
 						return err
 					}
 
-					unwindPointBlock, err := hermezDb.GetHighestBlockInBatch(batch - 1)
-					if err != nil {
-						return err
-					}
-
-					stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batch-1)
-
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, unwindPointBlock))
-					u.UnwindTo(unwindPointBlock, l2Block.L2Blockhash)
+					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
+					stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
+					u.UnwindTo(unwindBlockNum, unwindBlockHash)
 
 					return nil
 				}
@@ -453,14 +449,21 @@ LOOP:
 			if lastHash != emptyHash {
 				if dbParentBlockHash != lastHash {
 					// unwind/rollback blocks until the latest common ancestor block
-					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
+					log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, l2Block.L2BlockNumber),
+						"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
+					ancestorBlockNum, _, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, l2Block.L2BlockNumber)
 					if err != nil {
 						return err
 					}
 
-					log.Warn(fmt.Sprintf("[%s] Parent hashes mismatch (local db and DS), rollback triggered...", logPrefix))
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
-					u.UnwindTo(ancestorBlockNum, ancestorBlockHash)
+					unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum)
+					if err != nil {
+						return err
+					}
+
+					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
+					stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
+					u.UnwindTo(unwindBlockNum, unwindBlockHash)
 					return nil
 				}
 
@@ -1014,17 +1017,6 @@ func writeL2Block(eriDb ErigonDb, hermezDb HermezDb, l2Block *types.FullL2Block,
 
 // findCommonAncestor searches the latest common ancestor block number and hash between the data stream and the local db.
 // The common ancestor block is the one that matches both l2 block hash and batch number.
-// Parameters:
-//   - db: An instance of ErigonDb, which provides methods to read data from the blockchain database.
-//   - hermezDb: An instance of HermezDb, which provides methods to read data from Hermez database.
-//   - dsClient: An instance of DatastreamClient, that provides mechanism to read data from the sequencer.
-//   - latestBlockNum: The upper bound of search interval.
-//
-// Returns:
-//   - uint64: The block number of the latest common ancestor block.
-//   - common.Hash: The block hash of the latest common ancestor block.
-//   - error: An error object that is not nil if the function encounters an issue while reading the
-//     database or if the target hash is not found.
 func findCommonAncestor(
 	db erigon_db.ReadOnlyErigonDb,
 	hermezDb state.ReadOnlyHermezDb,
@@ -1077,4 +1069,35 @@ func findCommonAncestor(
 	}
 
 	return *blockNumber, blockHash, nil
+}
+
+// resolveUnwindBlock resolves the unwind block as the latest block in the previous batch, relative to the found ancestor block.
+func resolveUnwindBlock(eriDb erigon_db.ReadOnlyErigonDb, hermezDb state.ReadOnlyHermezDb, ancestorBlockNum uint64) (uint64, common.Hash, uint64, error) {
+	batchNum, err := hermezDb.GetBatchNoByL2Block(ancestorBlockNum)
+	if err != nil {
+		return 0, emptyHash, 0, err
+	}
+
+	unwindBlockNum, err := hermezDb.GetHighestBlockInBatch(batchNum - 1)
+	if err != nil {
+		return 0, emptyHash, 0, err
+	}
+
+	unwindBlockHash, err := eriDb.ReadCanonicalHash(unwindBlockNum)
+	if err != nil {
+		return 0, emptyHash, 0, err
+	}
+
+	return unwindBlockNum, unwindBlockHash, batchNum, nil
+}
+
+// newStreamClient instantiates new datastreamer client, starts it and provides a cleanup handler to be invoked at convenience.
+func newStreamClient(ctx context.Context, cfg *ethconfig.Zk, latestForkId uint64) (dsClient *client.StreamClient, cleanupHandler func(), err error) {
+	dsClient = client.NewClient(ctx, cfg.L2DataStreamerUrl, cfg.DatastreamVersion, cfg.L2DataStreamerTimeout, uint16(latestForkId))
+	cleanupHandler = func() {
+		dsClient.Stop()
+	}
+	err = dsClient.Start()
+
+	return
 }
