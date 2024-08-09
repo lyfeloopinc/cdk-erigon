@@ -154,14 +154,12 @@ func GetBatchLocalExitRootFromSCStorage(batchNo uint64, db DbReader, tx kv.Tx) (
 		stateReader := state.NewPlainStateReadAccountStorage(tx, 0)
 		defer stateReader.Close()
 
-		for ; checkBatch > 0; checkBatch-- {
-			blockNo, err := db.GetHighestBlockInBatch(checkBatch)
+		for ; checkBatch >= 0; checkBatch-- {
+			blockNo, err := db.GetHighestBlockInBatch(checkBatch + 1)
 			if err != nil {
 				return libcommon.Hash{}, err
 			}
 
-			// stateReader := state.NewPlainStateReadAccountStorage(tx, blockNo)
-			// defer stateReader.Close()
 			stateReader.SetBlockNr(blockNo)
 			rawLer, err := stateReader.ReadAccountStorage(state.GER_MANAGER_ADDRESS, 1, &state.GLOBAL_EXIT_ROOT_POS_1)
 			if err != nil {
