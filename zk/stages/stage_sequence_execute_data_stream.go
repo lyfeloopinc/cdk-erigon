@@ -89,7 +89,7 @@ func finalizeLastBatchInDatastreamIfNotFinalized(batchContext *BatchContext, bat
 	}
 
 	log.Warn(fmt.Sprintf("[%s] Last batch %d was not closed properly, closing it now...", batchContext.s.LogPrefix(), batchState.batchNumber))
-	ler, err := utils.GetBatchLocalExitRootFromSCStorage(batchState.batchNumber, batchContext.sdb.hermezDb.HermezDbReader, batchContext.sdb.tx)
+	ler, err := utils.GetLocalExitRootFromSCStorage(batchState.builtBlocks[len(batchState.builtBlocks)-1], batchContext.sdb.hermezDb.HermezDbReader, batchContext.sdb.tx)
 	if err != nil {
 		return err
 	}

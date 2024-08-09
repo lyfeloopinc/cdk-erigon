@@ -81,7 +81,7 @@ type ForkConfigWriter interface {
 }
 
 type DbReader interface {
-	GetLocalExitRootForBatchNo(batchNo uint64) (libcommon.Hash, error)
+	GetLocalExitRootForL2BlockNo(blockNo uint64) (libcommon.Hash, error)
 	GetHighestBlockInBatch(batchNo uint64) (uint64, error)
 }
 
@@ -133,14 +133,19 @@ func RecoverySetBlockConfigForks(blockNum uint64, forkId uint64, cfg ForkConfigW
 
 func GetBatchLocalExitRoot(batchNo uint64, db DbReader, tx kv.Tx) (libcommon.Hash, error) {
 	// check db first
-	//localExitRoot, err := db.GetLocalExitRootForBatchNo(batchNo)
-	//if err != nil {
-	//	return libcommon.Hash{}, err
-	//}
-	//
-	//if localExitRoot != (libcommon.Hash{}) {
-	//	return localExitRoot, nil
-	//}
+	blockNo, err := db.GetHighestBlockInBatch(batchNo)
+	if err != nil {
+		return libcommon.Hash{}, err
+	}
+
+	localExitRoot, err := db.GetLocalExitRootForL2BlockNo(blockNo)
+	if err != nil {
+		return libcommon.Hash{}, err
+	}
+
+	if localExitRoot != (libcommon.Hash{}) {
+		return localExitRoot, nil
+	}
 
 	return GetBatchLocalExitRootFromSCStorage(batchNo, db, tx)
 }
@@ -173,4 +178,17 @@ func GetBatchLocalExitRootFromSCStorage(batchNo uint64, db DbReader, tx kv.Tx) (
 	}
 
 	return localExitRoot, nil
+}
+
+func GetLocalExitRootFromSCStorage(blockNo uint64, db DbReader, tx kv.Tx) (libcommon.Hash, error) {
+	stateReader := state.NewPlainStateReadAccountStorage(tx, 0)
+	defer stateReader.Close()
+
+	stateReader.SetBlockNr(blockNo)
+	rawLer, err := stateReader.ReadAccountStorage(state.GER_MANAGER_ADDRESS, 1, &state.GLOBAL_EXIT_ROOT_POS_1)
+	if err != nil {
+		return libcommon.Hash{}, err
+	}
+
+	return libcommon.BytesToHash(rawLer), nil
 }

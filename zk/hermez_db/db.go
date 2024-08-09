@@ -46,7 +46,7 @@ const L1_INFO_LEAVES = "l1_info_leaves"                                 // l1 in
 const L1_INFO_ROOTS = "l1_info_roots"                                   // root hash -> l1 info tree index
 const INVALID_BATCHES = "invalid_batches"                               // batch number -> true
 const BATCH_PARTIALLY_PROCESSED = "batch_partially_processed"           // batch number -> true
-const LOCAL_EXIT_ROOTS = "local_exit_roots"                             // batch number -> local exit root
+const LOCAL_EXIT_ROOTS = "local_exit_roots"                             // l2 block number -> local exit root
 const ROllUP_TYPES_FORKS = "rollup_types_forks"                         // rollup type id -> fork id
 const FORK_HISTORY = "fork_history"                                     // index -> fork id + last verified batch
 const JUST_UNWOUND = "just_unwound"                                     // batch number -> true
@@ -1625,12 +1625,12 @@ func (db *HermezDb) TruncateIsBatchPartiallyProcessed(fromBatch, toBatch uint64)
 	return nil
 }
 
-func (db *HermezDb) WriteLocalExitRootForBatchNo(batchNo uint64, root common.Hash) error {
-	return db.tx.Put(LOCAL_EXIT_ROOTS, Uint64ToBytes(batchNo), root.Bytes())
+func (db *HermezDb) WriteLocalExitRootForL2BlockNo(blockNo uint64, root common.Hash) error {
+	return db.tx.Put(LOCAL_EXIT_ROOTS, Uint64ToBytes(blockNo), root.Bytes())
 }
 
-func (db *HermezDbReader) GetLocalExitRootForBatchNo(batchNo uint64) (common.Hash, error) {
-	v, err := db.tx.GetOne(LOCAL_EXIT_ROOTS, Uint64ToBytes(batchNo))
+func (db *HermezDbReader) GetLocalExitRootForL2BlockNo(blockNo uint64) (common.Hash, error) {
+	v, err := db.tx.GetOne(LOCAL_EXIT_ROOTS, Uint64ToBytes(blockNo))
 	if err != nil {
 		return common.Hash{}, err
 	}

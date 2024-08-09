@@ -70,7 +70,7 @@ type HermezDb interface {
 	WriteBlockL1InfoTreeIndex(blockNumber uint64, l1Index uint64) error
 	WriteBlockL1InfoTreeIndexProgress(blockNumber uint64, l1Index uint64) error
 	WriteLatestUsedGer(blockNo uint64, ger common.Hash) error
-	WriteLocalExitRootForBatchNo(batchNo uint64, localExitRoot common.Hash) error
+	WriteLocalExitRootForL2BlockNo(blockNo uint64, localExitRoot common.Hash) error
 }
 
 type DatastreamClient interface {
@@ -259,7 +259,11 @@ LOOP:
 			_ = batchStart
 		case batchEnd := <-batchEndChan:
 			if batchEnd.LocalExitRoot != emptyHash {
-				if err := hermezDb.WriteLocalExitRootForBatchNo(batchEnd.Number, batchEnd.LocalExitRoot); err != nil {
+				blockNo, err := hermezDb.GetHighestBlockInBatch(batchEnd.Number)
+				if err != nil {
+					return err
+				}
+				if err := hermezDb.WriteLocalExitRootForL2BlockNo(blockNo, batchEnd.LocalExitRoot); err != nil {
 					return fmt.Errorf("write local exit root for l1 block hash error: %v", err)
 				}
 			}

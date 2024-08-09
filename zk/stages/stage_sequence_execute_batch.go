@@ -163,12 +163,12 @@ func runBatchLastSteps(
 	}
 
 	// Local Exit Root (ler): read s/c storage every batch to store the LER for the highest block in the batch
-	ler, err := utils.GetBatchLocalExitRootFromSCStorage(thisBatch, batchContext.sdb.hermezDb.HermezDbReader, batchContext.sdb.tx)
+	ler, err := utils.GetLocalExitRootFromSCStorage(blockNumber, batchContext.sdb.hermezDb.HermezDbReader, batchContext.sdb.tx)
 	if err != nil {
 		return err
 	}
 	// write ler to hermezdb
-	if err = batchContext.sdb.hermezDb.WriteLocalExitRootForBatchNo(thisBatch, ler); err != nil {
+	if err = batchContext.sdb.hermezDb.WriteLocalExitRootForL2BlockNo(blockNumber, ler); err != nil {
 		return err
 	}
 
