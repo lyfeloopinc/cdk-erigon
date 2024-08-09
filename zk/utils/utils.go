@@ -133,14 +133,14 @@ func RecoverySetBlockConfigForks(blockNum uint64, forkId uint64, cfg ForkConfigW
 
 func GetBatchLocalExitRoot(batchNo uint64, db DbReader, tx kv.Tx) (libcommon.Hash, error) {
 	// check db first
-	localExitRoot, err := db.GetLocalExitRootForBatchNo(batchNo)
-	if err != nil {
-		return libcommon.Hash{}, err
-	}
-
-	if localExitRoot != (libcommon.Hash{}) {
-		return localExitRoot, nil
-	}
+	//localExitRoot, err := db.GetLocalExitRootForBatchNo(batchNo)
+	//if err != nil {
+	//	return libcommon.Hash{}, err
+	//}
+	//
+	//if localExitRoot != (libcommon.Hash{}) {
+	//	return localExitRoot, nil
+	//}
 
 	return GetBatchLocalExitRootFromSCStorage(batchNo, db, tx)
 }
