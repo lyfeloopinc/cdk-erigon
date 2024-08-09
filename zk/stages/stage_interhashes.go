@@ -17,10 +17,7 @@ import (
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
 	"github.com/ledgerwatch/log/v3"
 
-	"strings"
-
 	"context"
-	"math/big"
 	"time"
 
 	"os"
@@ -41,6 +38,8 @@ import (
 	"github.com/ledgerwatch/erigon/zk"
 	"github.com/status-im/keycard-go/hexutils"
 )
+
+var ctxDoneErr = errors.New("context done")
 
 type ZkInterHashesCfg struct {
 	db                kv.RwDB
@@ -241,6 +240,13 @@ func UnwindZkIntermediateHashesStage(u *stagedsync.UnwindState, s *stagedsync.St
 	return nil
 }
 
+func copy(originalMap map[string]string) map[string]string {
+	newMap := make(map[string]string)
+	for key, value := range originalMap {
+		newMap[key] = value
+	}
+	return newMap
+}
 func regenerateIntermediateHashes(ctx context.Context, logPrefix string, db kv.RwTx, eridb *db2.EriDb, smtIn *smt.SMT, toBlock uint64) (common.Hash, error) {
 	log.Info(fmt.Sprintf("[%s] Regeneration trie hashes started", logPrefix))
 	defer log.Info(fmt.Sprintf("[%s] Regeneration ended", logPrefix))
@@ -258,7 +264,6 @@ func regenerateIntermediateHashes(ctx context.Context, logPrefix string, db kv.R
 
 	log.Info(fmt.Sprintf("[%s] Collecting account data...", logPrefix))
 	dataCollectStartTime := time.Now()
-	keys := []utils.NodeKey{}
 
 	// get total accounts count for progress printer
 	total := uint64(0)
@@ -272,16 +277,47 @@ func regenerateIntermediateHashes(ctx context.Context, logPrefix string, db kv.R
 	progressChan, stopProgressPrinter := zk.ProgressPrinterWithoutValues(fmt.Sprintf("[%s] SMT regenerate progress", logPrefix), total*2)
 
 	progCt := uint64(0)
-	err := psr.ForEach(kv.PlainState, nil, func(k, acc []byte) error {
+
+	var err error
+	valChan := make(chan accountValue, 10000)
+	jobChan := make(chan func() error, 10000)
+	errChan := make(chan error, 1)
+
+	go func() {
+		defer close(valChan)
+		for {
+			select {
+			case job, more := <-jobChan:
+				if !more {
+					return
+				}
+				if err := job(); err != nil {
+					errChan <- err
+					return
+				}
+			case <-ctx.Done():
+				errChan <- ctxDoneErr
+				return
+			}
+		}
+	}()
+
+	if err = psr.ForEach(kv.PlainState, nil, func(k, acc []byte) error {
+		select {
+		case <-ctx.Done():
+			return ctxDoneErr
+		default:
+		}
 		progCt++
 		progressChan <- progCt
-		var err error
 		if len(k) == 20 {
 			if a != nil { // don't run process on first loop for first account (or it will miss collecting storage)
-				keys, err = processAccount(eridb, a, as, inc, psr, addr, keys)
+				cc, err := psr.ReadAccountCode(addr, inc, a.CodeHash)
 				if err != nil {
 					return err
 				}
+				asClone := copy(as)
+				jobChan <- func() error { return calcAccountValuesToChan(ctx, *a, asClone, cc, addr, valChan) }
 			}
 
 			a = &accounts.Account{}
@@ -307,19 +343,46 @@ func regenerateIntermediateHashes(ctx context.Context, logPrefix string, db kv.R
 			as[sk] = TrimHexString(v)
 		}
 		return nil
-	})
+	}); err != nil {
+		return trie.EmptyRoot, err
+	}
+
+	cc, err := psr.ReadAccountCode(addr, inc, a.CodeHash)
+	if err != nil {
+		return trie.EmptyRoot, err
+	}
+	// process the final account
+	asClone := copy(as)
+
+	jobChan <- func() error { return calcAccountValuesToChan(ctx, *a, asClone, cc, addr, valChan) }
+	close(jobChan)
+
+	keys := make([]utils.NodeKey, 0)
+	// save the values and keys to the db
+LOOP:
+	for {
+		select {
+		case <-ctx.Done():
+			return trie.EmptyRoot, ctxDoneErr
+		case av, more := <-valChan:
+			if more {
+				keys = append(keys, *av.key)
+				if err := eridb.InsertAccountValue(*av.key, *av.value); err != nil {
+					return trie.EmptyRoot, err
+				}
+
+				if err := eridb.InsertKeySource(*av.key, av.keySource); err != nil {
+					return trie.EmptyRoot, err
+				}
+			} else {
+				break LOOP
+			}
+		case err = <-errChan:
+			return trie.EmptyRoot, err
+		}
+	}
 
 	stopProgressPrinter()
-
-	if err != nil {
-		return trie.EmptyRoot, err
-	}
-
-	// process the final account
-	keys, err = processAccount(eridb, a, as, inc, psr, addr, keys)
-	if err != nil {
-		return trie.EmptyRoot, err
-	}
 
 	dataCollectTime := time.Since(dataCollectStartTime)
 	log.Info(fmt.Sprintf("[%s] Collecting account data finished in %v", logPrefix, dataCollectTime))
@@ -519,7 +582,7 @@ func unwindZkSMT(ctx context.Context, logPrefix string, from, to uint64, db kv.R
 	for i := from; i >= to+1; i-- {
 		select {
 		case <-ctx.Done():
-			return trie.EmptyRoot, errors.New(fmt.Sprintf("[%s] Context done", logPrefix))
+			return trie.EmptyRoot, errors.New("context done")
 		default:
 		}
 
@@ -630,181 +693,4 @@ func unwindZkSMT(ctx context.Context, logPrefix string, from, to uint64, db kv.R
 
 	hash := common.BigToHash(lr)
 	return hash, nil
-}
-
-func verifyLastHash(dbSmt *smt.SMT, expectedRootHash *common.Hash, checkRoot bool, logPrefix string) error {
-	hash := common.BigToHash(dbSmt.LastRoot())
-
-	if checkRoot && hash != *expectedRootHash {
-		panic(fmt.Sprintf("[%s] Wrong trie root: %x, expected (from header): %x", logPrefix, hash, expectedRootHash))
-	}
-	log.Info(fmt.Sprintf("[%s] Trie root matches", logPrefix), "hash", hash.Hex())
-	return nil
-}
-
-func processAccount(db smt.DB, a *accounts.Account, as map[string]string, inc uint64, psr *state2.PlainStateReader, addr common.Address, keys []utils.NodeKey) ([]utils.NodeKey, error) {
-	// get the account balance and nonce
-	keys, err := insertAccountStateToKV(db, keys, addr.String(), a.Balance.ToBig(), new(big.Int).SetUint64(a.Nonce))
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	// store the contract bytecode
-	cc, err := psr.ReadAccountCode(addr, inc, a.CodeHash)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	ach := hexutils.BytesToHex(cc)
-	if len(ach) > 0 {
-		hexcc := "0x" + ach
-		keys, err = insertContractBytecodeToKV(db, keys, addr.String(), hexcc)
-		if err != nil {
-			return []utils.NodeKey{}, err
-		}
-	}
-
-	if len(as) > 0 {
-		// store the account storage
-		keys, err = insertContractStorageToKV(db, keys, addr.String(), as)
-		if err != nil {
-			return []utils.NodeKey{}, err
-		}
-	}
-
-	return keys, nil
-}
-
-func insertContractBytecodeToKV(db smt.DB, keys []utils.NodeKey, ethAddr string, bytecode string) ([]utils.NodeKey, error) {
-	keyContractCode, err := utils.KeyContractCode(ethAddr)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	keyContractLength, err := utils.KeyContractLength(ethAddr)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	hashedBytecode, err := utils.HashContractBytecode(bytecode)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	parsedBytecode := strings.TrimPrefix(bytecode, "0x")
-	if len(parsedBytecode)%2 != 0 {
-		parsedBytecode = "0" + parsedBytecode
-	}
-
-	bi := utils.ConvertHexToBigInt(hashedBytecode)
-	bytecodeLength := len(parsedBytecode) / 2
-
-	x := utils.ScalarToArrayBig(bi)
-	valueContractCode, err := utils.NodeValue8FromBigIntArray(x)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	x = utils.ScalarToArrayBig(big.NewInt(int64(bytecodeLength)))
-	valueContractLength, err := utils.NodeValue8FromBigIntArray(x)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-	if !valueContractCode.IsZero() {
-		keys = append(keys, keyContractCode)
-		db.InsertAccountValue(keyContractCode, *valueContractCode)
-
-		ks := utils.EncodeKeySource(utils.SC_CODE, utils.ConvertHexToAddress(ethAddr), common.Hash{})
-		db.InsertKeySource(keyContractCode, ks)
-	}
-
-	if !valueContractLength.IsZero() {
-		keys = append(keys, keyContractLength)
-		db.InsertAccountValue(keyContractLength, *valueContractLength)
-
-		ks := utils.EncodeKeySource(utils.SC_LENGTH, utils.ConvertHexToAddress(ethAddr), common.Hash{})
-		db.InsertKeySource(keyContractLength, ks)
-	}
-
-	return keys, nil
-}
-
-func insertContractStorageToKV(db smt.DB, keys []utils.NodeKey, ethAddr string, storage map[string]string) ([]utils.NodeKey, error) {
-	a := utils.ConvertHexToBigInt(ethAddr)
-	add := utils.ScalarToArrayBig(a)
-
-	for k, v := range storage {
-		if v == "" {
-			continue
-		}
-
-		keyStoragePosition, err := utils.KeyContractStorage(add, k)
-		if err != nil {
-			return []utils.NodeKey{}, err
-		}
-
-		base := 10
-		if strings.HasPrefix(v, "0x") {
-			v = v[2:]
-			base = 16
-		}
-
-		val, _ := new(big.Int).SetString(v, base)
-
-		x := utils.ScalarToArrayBig(val)
-		parsedValue, err := utils.NodeValue8FromBigIntArray(x)
-		if err != nil {
-			return []utils.NodeKey{}, err
-		}
-		if !parsedValue.IsZero() {
-			keys = append(keys, keyStoragePosition)
-			db.InsertAccountValue(keyStoragePosition, *parsedValue)
-
-			sp, _ := utils.StrValToBigInt(k)
-
-			ks := utils.EncodeKeySource(utils.SC_STORAGE, utils.ConvertHexToAddress(ethAddr), common.BigToHash(sp))
-			db.InsertKeySource(keyStoragePosition, ks)
-		}
-	}
-
-	return keys, nil
-}
-
-func insertAccountStateToKV(db smt.DB, keys []utils.NodeKey, ethAddr string, balance, nonce *big.Int) ([]utils.NodeKey, error) {
-	keyBalance, err := utils.KeyEthAddrBalance(ethAddr)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-	keyNonce, err := utils.KeyEthAddrNonce(ethAddr)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	x := utils.ScalarToArrayBig(balance)
-	valueBalance, err := utils.NodeValue8FromBigIntArray(x)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	x = utils.ScalarToArrayBig(nonce)
-	valueNonce, err := utils.NodeValue8FromBigIntArray(x)
-	if err != nil {
-		return []utils.NodeKey{}, err
-	}
-
-	if !valueBalance.IsZero() {
-		keys = append(keys, keyBalance)
-		db.InsertAccountValue(keyBalance, *valueBalance)
-
-		ks := utils.EncodeKeySource(utils.KEY_BALANCE, utils.ConvertHexToAddress(ethAddr), common.Hash{})
-		db.InsertKeySource(keyBalance, ks)
-	}
-	if !valueNonce.IsZero() {
-		keys = append(keys, keyNonce)
-		db.InsertAccountValue(keyNonce, *valueNonce)
-
-		ks := utils.EncodeKeySource(utils.KEY_NONCE, utils.ConvertHexToAddress(ethAddr), common.Hash{})
-		db.InsertKeySource(keyNonce, ks)
-	}
-	return keys, nil
 }
