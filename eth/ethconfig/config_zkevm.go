@@ -28,6 +28,7 @@ type Zk struct {
 	L1MaticContractAddress                 common.Address
 	L1FirstBlock                           uint64
 	RpcRateLimits                          int
+	RpcGetBatchWitnessConcurrencyLimit     int
 	DatastreamVersion                      int
 	SequencerBlockSealTime                 time.Duration
 	SequencerBatchSealTime                 time.Duration
