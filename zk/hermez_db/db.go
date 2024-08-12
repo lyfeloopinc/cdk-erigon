@@ -972,7 +972,7 @@ func (db *HermezDb) DeleteBlockBatches(fromBlockNum, toBlockNum uint64) error {
 	batchNumbersMap := map[uint64]struct{}{}
 
 	// find all the batches involved
-	for i := fromBlockNum; i <= toBlockNum; i++ {
+	for i := fromBlockNum + 1; i <= toBlockNum; i++ {
 		batch, err := db.GetBatchNoByL2Block(i)
 		if err != nil {
 			return err
@@ -991,7 +991,7 @@ func (db *HermezDb) DeleteBlockBatches(fromBlockNum, toBlockNum uint64) error {
 		// make a new list excluding the blocks in our range
 		newBlockNos := make([]uint64, 0, len(blockNos))
 		for _, blockNo := range blockNos {
-			if blockNo < fromBlockNum || blockNo > toBlockNum {
+			if blockNo < fromBlockNum+1 || blockNo > toBlockNum {
 				newBlockNos = append(newBlockNos, blockNo)
 			}
 		}
@@ -1010,7 +1010,7 @@ func (db *HermezDb) DeleteBlockBatches(fromBlockNum, toBlockNum uint64) error {
 		}
 	}
 
-	return db.deleteFromBucketWithUintKeysRange(BLOCKBATCHES, fromBlockNum, toBlockNum)
+	return db.deleteFromBucketWithUintKeysRange(BLOCKBATCHES, fromBlockNum+1, toBlockNum)
 }
 
 func (db *HermezDb) deleteFromBucketWithUintKeysRange(bucket string, fromBlockNum, toBlockNum uint64) error {

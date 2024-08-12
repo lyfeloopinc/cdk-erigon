@@ -467,7 +467,7 @@ LOOP:
 					}
 				}
 
-				if dbParentBlockHash != dsParentBlockHash {
+				if lastHash == emptyHash && dbParentBlockHash != dsParentBlockHash {
 					// unwind/rollback blocks until the latest common ancestor block
 					log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, entry.L2BlockNumber),
 						"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
@@ -491,12 +491,6 @@ LOOP:
 					u.UnwindTo(unwindBlockNum, unwindBlockHash)
 					cfg.dsClient.Stop()
 					return nil
-				}
-
-				if lastHash != emptyHash {
-					entry.ParentHash = lastHash
-				} else {
-					entry.ParentHash = dbParentBlockHash
 				}
 
 				// skip if we already have this block

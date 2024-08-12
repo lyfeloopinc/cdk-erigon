@@ -153,6 +153,7 @@ func (c *StreamClient) Stop() {
 		log.Warn(fmt.Sprintf("Failed to send the stop command to the data stream server: %s", err))
 	}
 	c.conn.Close()
+	c.conn = nil
 
 	close(c.entryChan)
 }
@@ -242,6 +243,7 @@ func (c *StreamClient) EnsureConnected() (bool, error) {
 			return false, fmt.Errorf("failed to reconnect the datastream client: %w", err)
 		}
 		log.Info("[datastream_client] Datastream client connected.")
+		c.entryChan = make(chan interface{}, 100000)
 	}
 
 	return true, nil
