@@ -316,6 +316,8 @@ LOOP:
 			c.entryChan <- parsedProto
 		case *types.GerUpdateProto:
 			c.entryChan <- parsedProto
+		case *types.GerUpdate:
+			c.entryChan <- parsedProto
 		case *types.BatchEnd:
 			c.entryChan <- parsedProto
 		case *types.FullL2Block:
