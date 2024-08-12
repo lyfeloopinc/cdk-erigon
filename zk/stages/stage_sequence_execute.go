@@ -177,6 +177,8 @@ func sequencingStageStep(
 			return nil
 		}
 
+		log.Info(fmt.Sprintf("[%s] L1 recovery beginning for batch", logPrefix), "batch", batchState.batchNumber)
+
 		// let's check if we have any L1 data to recover
 		if err = batchState.batchL1RecoveryData.loadBatchData(sdb); err != nil {
 			return err

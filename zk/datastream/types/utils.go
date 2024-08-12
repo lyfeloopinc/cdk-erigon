@@ -4,20 +4,14 @@ import (
 	"fmt"
 
 	"github.com/ledgerwatch/erigon/zk/datastream/proto/github.com/0xPolygonHermez/zkevm-node/state/datastream"
-	"github.com/ledgerwatch/log/v3"
 )
 
 type FileEntryIterator interface {
 	NextFileEntry() (*FileEntry, error)
 }
 
-func FullBlockProto(iterator FileEntryIterator) (
-	l2Block *FullL2Block,
-	batchStart *BatchStart,
-	batchEnd *BatchEnd,
-	gerUpdate *GerUpdate,
-	batchBookmark *BookmarkProto,
-	blockBookmark *BookmarkProto,
+func ReadParsedProto(iterator FileEntryIterator) (
+	parsedEntry interface{},
 	err error,
 ) {
 	file, err := iterator.NextFileEntry()
@@ -28,34 +22,15 @@ func FullBlockProto(iterator FileEntryIterator) (
 
 	switch file.EntryType {
 	case BookmarkEntryType:
-		var bookmark *BookmarkProto
-		if bookmark, err = UnmarshalBookmark(file.Data); err != nil {
-			return
-		}
-		if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_BATCH {
-			batchBookmark = bookmark
-			return
-		} else {
-			blockBookmark = bookmark
-			return
-		}
+		parsedEntry, err = UnmarshalBookmark(file.Data)
 	case EntryTypeGerUpdate:
-		if gerUpdate, err = DecodeGerUpdateProto(file.Data); err != nil {
-			return
-		}
-		log.Trace("ger update", "ger", gerUpdate)
-		return
+		parsedEntry, err = DecodeGerUpdateProto(file.Data)
 	case EntryTypeBatchStart:
-		if batchStart, err = UnmarshalBatchStart(file.Data); err != nil {
-			return
-		}
-		return
+		parsedEntry, err = UnmarshalBatchStart(file.Data)
 	case EntryTypeBatchEnd:
-		if batchEnd, err = UnmarshalBatchEnd(file.Data); err != nil {
-			return
-		}
-		return
+		parsedEntry, err = UnmarshalBatchEnd(file.Data)
 	case EntryTypeL2Block:
+		var l2Block *FullL2Block
 		if l2Block, err = UnmarshalL2Block(file.Data); err != nil {
 			return
 		}
@@ -97,7 +72,7 @@ func FullBlockProto(iterator FileEntryIterator) (
 					return
 				}
 			} else if innerFile.IsBatchEnd() {
-				if batchEnd, err = UnmarshalBatchEnd(file.Data); err != nil {
+				if _, err = UnmarshalBatchEnd(file.Data); err != nil {
 					return
 				}
 				break LOOP
@@ -108,12 +83,12 @@ func FullBlockProto(iterator FileEntryIterator) (
 		}
 
 		l2Block.L2Txs = txs
+		parsedEntry = l2Block
 		return
 	case EntryTypeL2Tx:
 		err = fmt.Errorf("unexpected l2Tx out of block")
-		return
 	default:
 		err = fmt.Errorf("unexpected entry type: %d", file.EntryType)
-		return
 	}
+	return
 }

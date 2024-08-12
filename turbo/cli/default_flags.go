@@ -217,6 +217,8 @@ var DefaultFlags = []cli.Flag{
 	&utils.DataStreamHost,
 	&utils.DataStreamPort,
 	&utils.DataStreamWriteTimeout,
+	&utils.DataStreamInactivityTimeout,
+	&utils.DataStreamInactivityCheckInterval,
 	&utils.WitnessFullFlag,
 	&utils.SyncLimit,
 	&utils.SupportGasless,

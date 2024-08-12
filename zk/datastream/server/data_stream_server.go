@@ -620,22 +620,24 @@ func (srv *DataStreamServer) ReadBatches(start uint64, end uint64) ([][]*types.F
 func ReadBatches(iterator types.FileEntryIterator, start uint64, end uint64) ([][]*types.FullL2Block, error) {
 	batches := make([][]*types.FullL2Block, end-start+1)
 
+LOOP_ENTRIES:
 	for {
-		block, batchStart, batchEnd, _, _, _, err := types.FullBlockProto(iterator)
+		parsedProto, err := types.ReadParsedProto(iterator)
 		if err != nil {
 			return nil, err
 		}
 
-		if batchEnd != nil && batchEnd.Number == end {
-			break
-		}
-
-		if batchStart != nil {
-			batches[batchStart.Number-start] = []*types.FullL2Block{}
-		}
-
-		if block != nil {
-			batches[block.BatchNumber-start] = append(batches[block.BatchNumber-start], block)
+		switch parsedProto := parsedProto.(type) {
+		case *types.BatchStart:
+			batches[parsedProto.Number-start] = []*types.FullL2Block{}
+		case *types.BatchEnd:
+			if parsedProto.Number == end {
+				break LOOP_ENTRIES
+			}
+		case *types.FullL2Block:
+			batches[parsedProto.BatchNumber-start] = append(batches[parsedProto.BatchNumber-start], parsedProto)
+		default:
+			continue
 		}
 	}
 
