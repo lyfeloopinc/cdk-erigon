@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/0xPolygonHermez/zkevm-data-streamer/datastreamer"
 	"github.com/gateway-fm/cdk-erigon-lib/common"
 
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
@@ -38,6 +40,8 @@ const (
 var (
 	// ErrFailedToFindCommonAncestor denotes error suggesting that the common ancestor is not found in the database
 	ErrFailedToFindCommonAncestor = errors.New("failed to find common ancestor block in the db")
+
+	badFromBookmarkErrMsg = datastreamer.StrCommandErrors[datastreamer.CmdErrBadFromBookmark]
 )
 
 type ErigonDb interface {
@@ -183,49 +187,48 @@ func SpawnStageBatches(
 	startSyncTime := time.Now()
 
 	// TODO: TestUnwindBatches fails because of these changes
-	// latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
-	// if err != nil {
-	// 	return err
-	// }
+	latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
+	if err != nil {
+		return err
+	}
 
-	// var (
-	// 	tmpDSClient DatastreamClient
-	// 	cleanup     func()
-	// )
+	var (
+		tmpDSClient DatastreamClient
+		cleanup     func()
+	)
 
-	// if cfg.temporalDSClientCreator != nil {
-	// 	tmpDSClient, err = cfg.temporalDSClientCreator(ctx, cfg.zkCfg, uint16(latestForkId))
-	// } else {
-	// 	tmpDSClient, cleanup, err = newStreamClient(ctx, cfg.zkCfg, latestForkId)
-	// }
-	// defer cleanup()
-	// if err != nil {
-	// 	log.Warn(fmt.Sprintf("[%s] Error when starting datastream client. Error: %s", logPrefix, err))
-	// 	return err
-	// }
+	if cfg.temporalDSClientCreator != nil {
+		tmpDSClient, err = cfg.temporalDSClientCreator(ctx, cfg.zkCfg, uint16(latestForkId))
+	} else {
+		tmpDSClient, cleanup, err = newStreamClient(ctx, cfg.zkCfg, latestForkId)
+	}
+	defer cleanup()
+	if err != nil {
+		log.Warn(fmt.Sprintf("[%s] Error when starting datastream client. Error: %s", logPrefix, err))
+		return err
+	}
 
-	// highestBlockInDS := stageProgressBlockNo
-	// var highestL2Block *types.FullL2Block
+	highestBlockInDS := stageProgressBlockNo
+	var highestL2Block *types.FullL2Block
 
-	// for highestL2Block == nil {
-	// 	highestL2Block, err = tmpDSClient.GetL2BlockByNumber(highestBlockInDS)
-	// 	if err != nil {
-	// 		return err
-	// 	}
+	for highestL2Block == nil {
+		highestL2Block, err = tmpDSClient.GetL2BlockByNumber(highestBlockInDS)
+		if err != nil && !strings.Contains(err.Error(), badFromBookmarkErrMsg) {
+			return err
+		}
 
-	// 	if highestL2Block == nil {
-	// 		highestBlockInDS--
-	// 	} else {
-	// 		break
-	// 	}
-	// }
+		if highestL2Block != nil {
+			break
+		}
+		highestBlockInDS--
+	}
 
-	// if highestBlockInDS < stageProgressBlockNo {
-	// 	stageProgressBlockNo = highestBlockInDS
-	// }
+	if highestBlockInDS < stageProgressBlockNo {
+		stageProgressBlockNo = highestBlockInDS
+	}
 
-	// log.Info("Highest block in datastream", "block", highestBlockInDS)
-	// log.Info("Highest block in db", "block", stageProgressBlockNo)
+	log.Info(fmt.Sprintf("[%s] Highest block in datastream", logPrefix), "block", highestBlockInDS)
+	log.Info(fmt.Sprintf("[%s] Highest block in db", logPrefix), "block", stageProgressBlockNo)
 
 	dsClientProgress := cfg.dsClient.GetProgressAtomic()
 	dsClientProgress.Store(stageProgressBlockNo)
@@ -330,6 +333,7 @@ LOOP:
 					return fmt.Errorf("write batch end error: %v", err)
 				}
 			case *types.FullL2Block:
+				log.Info(fmt.Sprintf("[%s] Retrieved %d (%s) block from stream", logPrefix, entry.L2BlockNumber, entry.L2Blockhash.String()))
 				if cfg.zkCfg.SyncLimit > 0 && entry.L2BlockNumber >= cfg.zkCfg.SyncLimit {
 					// stop the node going into a crazy loop
 					time.Sleep(2 * time.Second)
@@ -367,55 +371,112 @@ LOOP:
 						// when the stage is fired up for the first time
 						log.Warn(fmt.Sprintf("[%s] Skipping block %d, already processed", logPrefix, entry.L2BlockNumber))
 					}
-					continue
-				}
 
-				// skip if we already have this block
-				if entry.L2BlockNumber < lastBlockHeight+1 {
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, entry.L2BlockNumber))
-					badBlock, err := eriDb.ReadCanonicalHash(entry.L2BlockNumber)
+					dbBatchNum, err := hermezDb.GetBatchNoByL2Block(entry.L2BlockNumber)
 					if err != nil {
-						return fmt.Errorf("failed to get bad block: %v", err)
+						return err
 					}
-					u.UnwindTo(entry.L2BlockNumber, badBlock)
+
+					if entry.BatchNumber != dbBatchNum {
+						// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
+						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected", logPrefix),
+							"block", entry.L2BlockNumber, "ds batch", entry.BatchNumber, "db batch", dbBatchNum)
+
+						latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
+						if err != nil {
+							return err
+						}
+
+						var (
+							tmpDSClient DatastreamClient
+							cleanup     func()
+						)
+
+						if cfg.temporalDSClientCreator != nil {
+							tmpDSClient, err = cfg.temporalDSClientCreator(ctx, cfg.zkCfg, uint16(latestForkId))
+						} else {
+							tmpDSClient, cleanup, err = newStreamClient(ctx, cfg.zkCfg, latestForkId)
+							defer cleanup()
+						}
+
+						if err != nil {
+							log.Warn(fmt.Sprintf("[%s] Error when starting datastream client... Error: %s", logPrefix, err))
+							return err
+						}
+
+						ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, tmpDSClient, entry.L2BlockNumber)
+						if err != nil {
+							return err
+						}
+
+						log.Info(fmt.Sprintf("[%s] found ancestor block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
+
+						unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
+						if err != nil {
+							return err
+						}
+
+						log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
+						err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
+						if err != nil {
+							return err
+						}
+						u.UnwindTo(unwindBlockNum, unwindBlockHash)
+
+						cfg.dsClient.Stop()
+
+						return nil
+					}
 				}
 
-				dbBatchNum, err := hermezDb.GetBatchNoByL2Block(entry.L2BlockNumber)
+				var dbParentBlockHash common.Hash
+				if entry.L2BlockNumber > 0 {
+					dbParentBlockHash, err = eriDb.ReadCanonicalHash(entry.L2BlockNumber - 1)
+					if err != nil {
+						return fmt.Errorf("failed to get genesis header: %v", err)
+					}
+				}
+
+				log.Info(fmt.Sprintf("[%s] lastHash %s, dbParentBlockHash %s", logPrefix, lastHash, dbParentBlockHash))
+
+				var (
+					tmpDSClient DatastreamClient
+					cleanup     func()
+				)
+
+				if cfg.temporalDSClientCreator != nil {
+					tmpDSClient, err = cfg.temporalDSClientCreator(ctx, cfg.zkCfg, uint16(latestForkId))
+				} else {
+					tmpDSClient, cleanup, err = newStreamClient(ctx, cfg.zkCfg, latestForkId)
+					defer cleanup()
+				}
 				if err != nil {
 					return err
 				}
 
-				if entry.BatchNumber != dbBatchNum {
-					// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
-					log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected", logPrefix),
-						"block", entry.L2BlockNumber, "ds batch", entry.BatchNumber, "db batch", dbBatchNum)
+				var dsParentBlockHash common.Hash
 
-					latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
+				if lastHash == emptyHash {
+					parentBlockDS, err := tmpDSClient.GetL2BlockByNumber(entry.L2BlockNumber - 1)
 					if err != nil {
 						return err
 					}
 
-					var (
-						tmpDSClient DatastreamClient
-						cleanup     func()
-					)
-
-					if cfg.temporalDSClientCreator != nil {
-						tmpDSClient, err = cfg.temporalDSClientCreator(ctx, cfg.zkCfg, uint16(latestForkId))
-					} else {
-						tmpDSClient, cleanup, err = newStreamClient(ctx, cfg.zkCfg, latestForkId)
-						defer cleanup()
+					if parentBlockDS != nil {
+						dsParentBlockHash = parentBlockDS.L2Blockhash
 					}
+				}
 
-					if err != nil {
-						log.Warn(fmt.Sprintf("[%s] Error when starting datastream client... Error: %s", logPrefix, err))
-						return err
-					}
-
+				if dbParentBlockHash != dsParentBlockHash {
+					// unwind/rollback blocks until the latest common ancestor block
+					log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, entry.L2BlockNumber),
+						"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
 					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, tmpDSClient, entry.L2BlockNumber)
 					if err != nil {
 						return err
 					}
+
+					log.Info(fmt.Sprintf("[%s] found ancestor block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
 
 					unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
 					if err != nil {
@@ -428,8 +489,25 @@ LOOP:
 						return err
 					}
 					u.UnwindTo(unwindBlockNum, unwindBlockHash)
-
+					cfg.dsClient.Stop()
 					return nil
+				}
+
+				if lastHash != emptyHash {
+					entry.ParentHash = lastHash
+				} else {
+					entry.ParentHash = dbParentBlockHash
+				}
+
+				// skip if we already have this block
+				if entry.L2BlockNumber < lastBlockHeight+1 {
+					log.Warn("HELLO!!")
+					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, entry.L2BlockNumber))
+					badBlock, err := eriDb.ReadCanonicalHash(entry.L2BlockNumber)
+					if err != nil {
+						return fmt.Errorf("failed to get bad block: %v", err)
+					}
+					u.UnwindTo(entry.L2BlockNumber, badBlock)
 				}
 
 				// check for sequential block numbers
@@ -458,48 +536,6 @@ LOOP:
 					}
 				}
 				/////// END DEBUG BISECTION ///////
-
-				// store our finalized state if this batch matches the highest verified batch number on the L1
-				if entry.BatchNumber == highestVerifiedBatch {
-					rawdb.WriteForkchoiceFinalized(tx, entry.L2Blockhash)
-				}
-
-				var dbParentBlockHash common.Hash
-				if entry.L2BlockNumber > 0 {
-					dbParentBlockHash, err = eriDb.ReadCanonicalHash(entry.L2BlockNumber - 1)
-					if err != nil {
-						return fmt.Errorf("failed to get genesis header: %v", err)
-					}
-				}
-
-				if lastHash != emptyHash {
-					if dbParentBlockHash != lastHash {
-						// unwind/rollback blocks until the latest common ancestor block
-						log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, entry.L2BlockNumber),
-							"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
-						ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, cfg.dsClient, entry.L2BlockNumber)
-						if err != nil {
-							return err
-						}
-
-						unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
-						if err != nil {
-							return err
-						}
-
-						log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
-						err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
-						if err != nil {
-							return err
-						}
-						u.UnwindTo(unwindBlockNum, unwindBlockHash)
-						return nil
-					}
-
-					entry.ParentHash = lastHash
-				} else {
-					entry.ParentHash = dbParentBlockHash
-				}
 
 				// store our finalized state if this batch matches the highest verified batch number on the L1
 				if entry.BatchNumber == highestVerifiedBatch {
