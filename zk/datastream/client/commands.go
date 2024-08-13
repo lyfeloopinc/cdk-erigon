@@ -58,6 +58,23 @@ func (c *StreamClient) sendStartCmd(from uint64) error {
 	return nil
 }
 
+// sendBookmarkCmd sends a bookmark get command to the server.
+// It sends CmdBookmark, followed by the bookmark length and bookmark itself.
+func (c *StreamClient) sendBookmarkCmd(bookmark []byte) error {
+	// Send CmdBookmark command
+	if err := c.sendCommand(CmdBookmark); err != nil {
+		return err
+	}
+
+	// Send bookmark length
+	if err := writeFullUint32ToConn(c.conn, uint32(len(bookmark))); err != nil {
+		return err
+	}
+
+	// Send the bookmark to retrieve
+	return writeBytesToConn(c.conn, bookmark)
+}
+
 // sendHeaderCmd sends the header command to the server.
 func (c *StreamClient) sendStopCmd() error {
 	err := c.sendCommand(CmdStop)

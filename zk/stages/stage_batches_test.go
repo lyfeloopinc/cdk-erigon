@@ -49,7 +49,7 @@ func TestUnwindBatches(t *testing.T) {
 
 	dsClient := NewTestDatastreamClient(fullL2Blocks, gerUpdates)
 
-	tmpDSClientCreator := func(_ context.Context, _ *ethconfig.Zk, _ uint16) (DatastreamClient, error) {
+	tmpDSClientCreator := func(_ context.Context, _ *ethconfig.Zk, _ uint64) (DatastreamClient, error) {
 		return NewTestDatastreamClient(fullL2Blocks, gerUpdates), nil
 	}
 	cfg := StageBatchesCfg(db1, dsClient, &ethconfig.Zk{}, WithDSClientCreator(tmpDSClientCreator))
