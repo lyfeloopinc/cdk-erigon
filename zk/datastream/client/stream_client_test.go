@@ -158,7 +158,7 @@ func Test_readFileEntry(t *testing.T) {
 			name:           "Invalid packet type",
 			input:          []byte{5, 0, 0, 0, 17, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 45},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("error expecting data packet type 2 and received 5"),
+			expectedError:  fmt.Errorf("expected data packet type 2 or 254 and received 5"),
 		},
 		{
 			name:           "Invalid byte array length",
