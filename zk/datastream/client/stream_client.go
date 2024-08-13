@@ -93,39 +93,33 @@ func (c *StreamClient) GetEntryChan() chan interface{} {
 }
 
 func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
-	log.Info(fmt.Sprintf("retrieving %d block from the DS", blockNum))
+	defer c.tryReConnect()
 	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
+
 	bookmarkRaw, err := bookmark.Marshal()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := c.sendBookmarkCmd(bookmarkRaw); err != nil {
+	if err := c.initiateDownloadBookmark(bookmarkRaw); err != nil {
 		return nil, err
 	}
 
-	select {
-	case <-c.ctx.Done():
-		log.Warn("[Datastream client] Context done - stopping")
-		return nil, c.ctx.Err()
-	default:
-	}
+	var (
+		l2Block   *types.FullL2Block
+		isL2Block bool
+	)
 
-	if re, err := c.readPacketAndDecodeResultEntry(); err != nil {
-		return nil, fmt.Errorf("failed to retrieve the result entry: %w", err)
-	} else if err := re.GetError(); err != nil {
-		return nil, err
-	}
+	for l2Block == nil {
+		parsedEntry, err := c.readParsedProto()
+		if err != nil {
+			return nil, err
+		}
 
-	parsedEntry, err := c.readParsedProto()
-	if err != nil {
-		return nil, err
-	}
-
-	l2Block, isL2Block := parsedEntry.(*types.FullL2Block)
-
-	if !isL2Block {
-		return nil, fmt.Errorf("failed to retrieve the block num %d from the data stream", blockNum)
+		l2Block, isL2Block = parsedEntry.(*types.FullL2Block)
+		if isL2Block {
+			break
+		}
 	}
 
 	if l2Block.L2BlockNumber != blockNum {
