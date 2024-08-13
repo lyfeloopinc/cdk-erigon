@@ -104,6 +104,13 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 		return nil, err
 	}
 
+	select {
+	case <-c.ctx.Done():
+		log.Warn("[Datastream client] Context done - stopping")
+		return nil, c.ctx.Err()
+	default:
+	}
+
 	if re, err := c.readPacketAndDecodeResultEntry(); err != nil {
 		return nil, fmt.Errorf("failed to retrieve the result entry: %w", err)
 	} else if err := re.GetError(); err != nil {
