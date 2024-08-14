@@ -59,10 +59,6 @@ func TestUnwindBatches(t *testing.T) {
 	us := &stagedsync.UnwindState{ID: stages.Batches, UnwindPoint: 0, CurrentBlockNumber: uint64(currentBlockNumber)}
 	err = stages.SaveStageProgress(tx, stages.L1VerificationsBatchNo, 20)
 	require.NoError(t, err)
-	// err = stages.SaveStageProgress(tx, stages.Batches, 1)
-	// require.NoError(t, err)
-	// err = stages.SaveStageProgress(tx, stages.Execution, uint64(currentBlockNumber))
-	// require.NoError(t, err)
 
 	// get bucket sizes pre inserts
 	bucketSized := make(map[string]uint64)
