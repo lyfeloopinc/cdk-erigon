@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/0xPolygonHermez/zkevm-data-streamer/datastreamer"
 	"github.com/ledgerwatch/erigon/zk/datastream/proto/github.com/0xPolygonHermez/zkevm-node/state/datastream"
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
 	"github.com/ledgerwatch/log/v3"
@@ -30,7 +31,8 @@ const (
 )
 
 var (
-	ErrFileEntryNotFound = errors.New("file entry not found")
+	ErrFileEntryNotFound  = errors.New("file entry not found")
+	ErrBadFromBookmarkStr = datastreamer.StrCommandErrors[datastreamer.CmdErrBadFromBookmark]
 )
 
 type StreamClient struct {
@@ -111,6 +113,11 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 	)
 
 	for l2Block == nil {
+		select {
+		case <-c.ctx.Done():
+			return l2Block, nil
+		default:
+		}
 		parsedEntry, err := c.readParsedProto()
 		if err != nil {
 			return nil, err
@@ -377,17 +384,16 @@ func (c *StreamClient) tryReConnect() error {
 	for i := 0; i < 50; i++ {
 		if c.conn != nil {
 			if err := c.conn.Close(); err != nil {
-				log.Warn(fmt.Sprintf("[%d] failed to close the DS conn: %s", i+1, err))
+				log.Warn(fmt.Sprintf("[%d. iteration] failed to close the DS connection: %s", i+1, err))
 				return err
 			}
 			c.conn = nil
 		}
 		if err = c.Start(); err != nil {
-			log.Warn(fmt.Sprintf("[%d] failed to start the DS conn: %s", i+1, err))
+			log.Warn(fmt.Sprintf("[%d. iteration] failed to start the DS connection: %s", i+1, err))
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		log.Warn(fmt.Sprintf("[%d] DS connection started", i+1))
 		return nil
 	}
 
