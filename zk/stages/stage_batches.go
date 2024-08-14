@@ -409,9 +409,8 @@ LOOP:
 
 				log.Info(fmt.Sprintf("[%s] lastHash %s, dbParentBlockHash %s", logPrefix, lastHash, dbParentBlockHash))
 
-				var dsParentBlockHash common.Hash
-
-				if lastHash == emptyHash {
+				dsParentBlockHash := lastHash
+				if dsParentBlockHash == emptyHash {
 					parentBlockDS, err := dsQueryClient.GetL2BlockByNumber(entry.L2BlockNumber - 1)
 					if err != nil {
 						return err
@@ -422,7 +421,7 @@ LOOP:
 					}
 				}
 
-				if lastHash == emptyHash && dbParentBlockHash != dsParentBlockHash {
+				if dbParentBlockHash != dsParentBlockHash {
 					// unwind/rollback blocks until the latest common ancestor block
 					log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, entry.L2BlockNumber),
 						"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
