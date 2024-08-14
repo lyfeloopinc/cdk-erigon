@@ -88,6 +88,7 @@ type DatastreamClient interface {
 	ReadAllEntriesToChannel() error
 	GetEntryChan() chan interface{}
 	GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error)
+	GetLatestL2Block() (*types.FullL2Block, error)
 	GetLastWrittenTimeAtomic() *atomic.Int64
 	GetStreamingAtomic() *atomic.Bool
 	GetProgressAtomic() *atomic.Uint64
@@ -204,28 +205,16 @@ func SpawnStageBatches(
 	}
 	defer dsQueryClient.Stop()
 
-	highestBlockInDS := stageProgressBlockNo
-	var highestL2Block *types.FullL2Block
-
-	for highestL2Block == nil {
-		highestL2Block, err = dsQueryClient.GetL2BlockByNumber(highestBlockInDS)
-		if err != nil && !strings.Contains(err.Error(), client.ErrFileEntryNotFound.Error()) {
-			log.Warn(fmt.Sprintf("[%s] Failed to query for block num %d: %s", logPrefix, highestBlockInDS, err))
-			return err
-		}
-
-		if highestL2Block != nil {
-			break
-		}
-
-		highestBlockInDS--
+	highestDSL2Block, err := dsQueryClient.GetLatestL2Block()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve the latest datastream l2 block: %w", err)
 	}
 
-	if highestBlockInDS < stageProgressBlockNo {
-		stageProgressBlockNo = highestBlockInDS
+	if highestDSL2Block.L2BlockNumber < stageProgressBlockNo {
+		stageProgressBlockNo = highestDSL2Block.L2BlockNumber
 	}
 
-	log.Info(fmt.Sprintf("[%s] Highest block in datastream", logPrefix), "block", highestBlockInDS)
+	log.Info(fmt.Sprintf("[%s] Highest block in datastream", logPrefix), "block", highestDSL2Block.L2BlockNumber)
 	log.Info(fmt.Sprintf("[%s] Highest block in db", logPrefix), "block", stageProgressBlockNo)
 
 	dsClientProgress := cfg.dsClient.GetProgressAtomic()
@@ -241,7 +230,7 @@ func SpawnStageBatches(
 		for i := 0; i < 5; i++ {
 			connected, err = cfg.dsClient.EnsureConnected()
 			if err != nil {
-				log.Error("[datastream_client] Error connecting to datastream", "error", err)
+				log.Error(fmt.Sprintf("[%s] Error connecting to datastream", logPrefix), "error", err)
 				continue
 			}
 			if connected {
@@ -404,8 +393,6 @@ LOOP:
 						}
 						u.UnwindTo(unwindBlockNum, unwindBlockHash)
 
-						cfg.dsClient.Stop()
-
 						return nil
 					}
 				}
@@ -455,7 +442,6 @@ LOOP:
 						return err
 					}
 					u.UnwindTo(unwindBlockNum, unwindBlockHash)
-					cfg.dsClient.Stop()
 					return nil
 				}
 
@@ -1085,12 +1071,9 @@ func findCommonAncestor(
 
 	for startBlockNum <= endBlockNum {
 		midBlockNum := (startBlockNum + endBlockNum) / 2
-		midBlockStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
-		if err != nil {
+		midBlockDataStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
+		if err != nil && !strings.Contains(err.Error(), client.ErrBadFromBookmarkStr) {
 			return 0, emptyHash, err
-		}
-		if midBlockStream == nil {
-			return 0, emptyHash, fmt.Errorf("failed to fetch block %d from data stream", midBlockNum)
 		}
 
 		midBlockDbHash, err := db.ReadCanonicalHash(midBlockNum)
@@ -1103,8 +1086,9 @@ func findCommonAncestor(
 			return 0, emptyHash, err
 		}
 
-		if midBlockStream.L2Blockhash == midBlockDbHash &&
-			midBlockStream.BatchNumber == dbBatchNum {
+		if midBlockDataStream != nil &&
+			midBlockDataStream.L2Blockhash == midBlockDbHash &&
+			midBlockDataStream.BatchNumber == dbBatchNum {
 			startBlockNum = midBlockNum + 1
 
 			blockNumber = &midBlockNum

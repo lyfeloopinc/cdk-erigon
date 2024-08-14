@@ -64,6 +64,13 @@ func (c *TestDatastreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL
 	return nil, nil
 }
 
+func (c *TestDatastreamClient) GetLatestL2Block() (*types.FullL2Block, error) {
+	if len(c.fullL2Blocks) == 0 {
+		return nil, nil
+	}
+	return &c.fullL2Blocks[len(c.fullL2Blocks)-1], nil
+}
+
 func (c *TestDatastreamClient) GetLastWrittenTimeAtomic() *atomic.Int64 {
 	return &c.lastWrittenTimeAtomic
 }

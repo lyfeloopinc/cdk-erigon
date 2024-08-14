@@ -75,6 +75,20 @@ func (c *StreamClient) sendBookmarkCmd(bookmark []byte) error {
 	return writeBytesToConn(c.conn, bookmark)
 }
 
+func (c *StreamClient) sendEntryCmd(entryNum uint64) error {
+	// Send CmdEntry command
+	if err := c.sendCommand(CmdEntry); err != nil {
+		return err
+	}
+
+	// Send entry number
+	if err := writeFullUint64ToConn(c.conn, entryNum); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // sendHeaderCmd sends the header command to the server.
 func (c *StreamClient) sendStopCmd() error {
 	err := c.sendCommand(CmdStop)

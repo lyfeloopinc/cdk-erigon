@@ -34,7 +34,7 @@ func (f *FileEntry) IsBookmarkBlock() bool {
 }
 
 func (f *FileEntry) IsL2BlockEnd() bool {
-	return uint32(f.EntryType) == uint32(6) //TODO: fix once it is added in the lib
+	return uint32(f.EntryType) == uint32(datastream.EntryType_ENTRY_TYPE_L2_BLOCK_END)
 }
 func (f *FileEntry) IsL2Block() bool {
 	return uint32(f.EntryType) == uint32(datastream.EntryType_ENTRY_TYPE_L2_BLOCK)
