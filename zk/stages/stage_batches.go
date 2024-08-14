@@ -393,6 +393,8 @@ LOOP:
 						}
 						u.UnwindTo(unwindBlockNum, unwindBlockHash)
 
+						cfg.dsClient.Stop()
+
 						return nil
 					}
 				}
@@ -442,6 +444,7 @@ LOOP:
 						return err
 					}
 					u.UnwindTo(unwindBlockNum, unwindBlockHash)
+					cfg.dsClient.Stop()
 					return nil
 				}
 

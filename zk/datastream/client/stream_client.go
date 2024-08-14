@@ -93,18 +93,13 @@ func (c *StreamClient) GetEntryChan() chan interface{} {
 	return c.entryChan
 }
 
-func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
-	var (
-		l2Block   *types.FullL2Block
-		isL2Block bool
-		err       error
-	)
+func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (l2Block *types.FullL2Block, err error) {
+	c.EnsureConnected()
+	defer c.Stop()
 
-	defer func() {
-		if stopErr := c.sendStopCmd(); stopErr != nil && err == nil {
-			err = stopErr
-		}
-	}()
+	var (
+		isL2Block bool
+	)
 
 	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
 	bookmarkRaw, err := bookmark.Marshal()
@@ -141,7 +136,10 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 	return l2Block, nil
 }
 
-func (c *StreamClient) GetLatestL2Block() (*types.FullL2Block, error) {
+func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error) {
+	c.EnsureConnected()
+	defer c.Stop()
+
 	h, err := c.GetHeader()
 	if err != nil {
 		return nil, err
@@ -149,7 +147,6 @@ func (c *StreamClient) GetLatestL2Block() (*types.FullL2Block, error) {
 
 	latestEntryNum := h.TotalEntries - 1
 
-	var l2Block *types.FullL2Block
 	for l2Block == nil && latestEntryNum > 0 {
 		if err := c.sendEntryCmdWrapper(latestEntryNum); err != nil {
 			return nil, err
@@ -201,6 +198,9 @@ func (c *StreamClient) Start() error {
 }
 
 func (c *StreamClient) Stop() {
+	if c.conn == nil {
+		return
+	}
 	if err := c.sendStopCmd(); err != nil {
 		log.Warn(fmt.Sprintf("Failed to send the stop command to the data stream server: %s", err))
 	}
