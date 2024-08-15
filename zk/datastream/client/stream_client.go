@@ -31,7 +31,10 @@ const (
 )
 
 var (
-	ErrFileEntryNotFound  = errors.New("file entry not found")
+	// ErrFileEntryNotFound denotes error that is returned when the certain file entry is not found in the datastream
+	ErrFileEntryNotFound = errors.New("file entry not found")
+
+	// ErrBadFromBookmarkStr denotes the error message for CmdErrBadFromBookmark error code from data stream library
 	ErrBadFromBookmarkStr = datastreamer.StrCommandErrors[datastreamer.CmdErrBadFromBookmark]
 )
 
@@ -93,11 +96,13 @@ func (c *StreamClient) GetEntryChan() chan interface{} {
 	return c.entryChan
 }
 
-func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (l2Block *types.FullL2Block, err error) {
+func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
 	c.EnsureConnected()
 	defer c.Stop()
 
 	var (
+		l2Block   *types.FullL2Block
+		err       error
 		isL2Block bool
 	)
 

@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/0xPolygonHermez/zkevm-data-streamer/datastreamer"
 	"github.com/gateway-fm/cdk-erigon-lib/common"
 
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
@@ -40,8 +39,6 @@ const (
 var (
 	// ErrFailedToFindCommonAncestor denotes error suggesting that the common ancestor is not found in the database
 	ErrFailedToFindCommonAncestor = errors.New("failed to find common ancestor block in the db")
-
-	badFromBookmarkErrMsg = datastreamer.StrCommandErrors[datastreamer.CmdErrBadFromBookmark]
 )
 
 type ErigonDb interface {
@@ -1072,7 +1069,9 @@ func findCommonAncestor(
 
 		midBlockNum := (startBlockNum + endBlockNum) / 2
 		midBlockDataStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
-		if err != nil && !strings.Contains(err.Error(), client.ErrBadFromBookmarkStr) {
+		if err != nil &&
+			// the required block might not be in the data stream, so ignore that error
+			!strings.Contains(err.Error(), client.ErrBadFromBookmarkStr) {
 			return 0, emptyHash, err
 		}
 
