@@ -147,7 +147,7 @@ func Test_FindCommonAncestor(t *testing.T) {
 			dsBlocksCount:         10,
 			divergentBlockHistory: true,
 			latestBlockNum:        20,
-			expectedError:         fmt.Errorf("failed to fetch block %d from data stream", 0),
+			expectedError:         ErrFailedToFindCommonAncestor,
 		},
 	}
 

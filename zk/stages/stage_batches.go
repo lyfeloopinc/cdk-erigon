@@ -1072,6 +1072,10 @@ func findCommonAncestor(
 	}
 
 	for startBlockNum <= endBlockNum {
+		if endBlockNum == 0 {
+			return 0, emptyHash, ErrFailedToFindCommonAncestor
+		}
+
 		midBlockNum := (startBlockNum + endBlockNum) / 2
 		midBlockDataStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
 		if err != nil && !strings.Contains(err.Error(), client.ErrBadFromBookmarkStr) {
