@@ -240,7 +240,7 @@ func SpawnStageBatches(
 
 			if connected {
 				if err := cfg.dsClient.ReadAllEntriesToChannel(); err != nil {
-					log.Error("[datastream_client] Error downloading blocks from datastream", "error", err)
+					log.Error(fmt.Sprintf("[%s] Error downloading blocks from datastream", logPrefix), "error", err)
 				}
 			}
 		}()
@@ -316,7 +316,7 @@ LOOP:
 					return fmt.Errorf("write batch end error: %v", err)
 				}
 			case *types.FullL2Block:
-				log.Info(fmt.Sprintf("[%s] Retrieved %d (%s) block from stream", logPrefix, entry.L2BlockNumber, entry.L2Blockhash.String()))
+				log.Debug(fmt.Sprintf("[%s] Retrieved %d (%s) block from stream", logPrefix, entry.L2BlockNumber, entry.L2Blockhash.String()))
 				if cfg.zkCfg.SyncLimit > 0 && entry.L2BlockNumber >= cfg.zkCfg.SyncLimit {
 					// stop the node going into a crazy loop
 					time.Sleep(2 * time.Second)
@@ -397,8 +397,6 @@ LOOP:
 						return fmt.Errorf("failed to get genesis header: %v", err)
 					}
 				}
-
-				log.Info(fmt.Sprintf("[%s] lastHash %s, dbParentBlockHash %s", logPrefix, lastHash, dbParentBlockHash))
 
 				dsParentBlockHash := lastHash
 				if dsParentBlockHash == emptyHash {

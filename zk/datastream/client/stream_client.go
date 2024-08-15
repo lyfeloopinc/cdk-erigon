@@ -97,7 +97,9 @@ func (c *StreamClient) GetEntryChan() chan interface{} {
 }
 
 func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
-	c.EnsureConnected()
+	if _, err := c.EnsureConnected(); err != nil {
+		return nil, err
+	}
 	defer c.Stop()
 
 	var (
@@ -142,7 +144,9 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 }
 
 func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error) {
-	c.EnsureConnected()
+	if _, err := c.EnsureConnected(); err != nil {
+		return nil, err
+	}
 	defer c.Stop()
 
 	h, err := c.GetHeader()
@@ -313,7 +317,6 @@ func (c *StreamClient) EnsureConnected() (bool, error) {
 		if err := c.tryReConnect(); err != nil {
 			return false, fmt.Errorf("failed to reconnect the datastream client: %w", err)
 		}
-		log.Info("[datastream_client] Datastream client connected.")
 		c.entryChan = make(chan interface{}, 100000)
 	}
 
