@@ -187,7 +187,6 @@ func SpawnStageBatches(
 
 	startSyncTime := time.Now()
 
-	// TODO: TestUnwindBatches fails because of these changes
 	latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
 	if err != nil {
 		return err
@@ -368,11 +367,6 @@ LOOP:
 						// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
 						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected", logPrefix),
 							"block", entry.L2BlockNumber, "ds batch", entry.BatchNumber, "db batch", dbBatchNum)
-
-						if err != nil {
-							log.Warn(fmt.Sprintf("[%s] Error when starting datastream client... Error: %s", logPrefix, err))
-							return err
-						}
 
 						ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber)
 						if err != nil {

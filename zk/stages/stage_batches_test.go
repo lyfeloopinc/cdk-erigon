@@ -102,7 +102,7 @@ func TestUnwindBatches(t *testing.T) {
 	}
 }
 
-func Test_FindCommonAncestor(t *testing.T) {
+func TestFindCommonAncestor(t *testing.T) {
 	blocksCount := 40
 	l2Blocks := createTestL2Blocks(t, blocksCount)
 
