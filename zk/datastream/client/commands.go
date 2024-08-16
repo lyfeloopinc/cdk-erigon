@@ -23,46 +23,17 @@ func (c *StreamClient) sendHeaderCmd() error {
 	return nil
 }
 
-// sendStartBookmarkCmd sends a start command to the server, indicating
-// that the client wishes to start streaming from the given bookmark
-func (c *StreamClient) sendStartBookmarkCmd(bookmark []byte) error {
-	err := c.sendCommand(CmdStartBookmark)
-	if err != nil {
-		return err
+// sendBookmarkCmd sends either CmdStartBookmark or CmdBookmark for the provided bookmark value.
+// In case streaming parameter is set to true, the CmdStartBookmark is sent, otherwise the CmdBookmark.
+func (c *StreamClient) sendBookmarkCmd(bookmark []byte, streaming bool) error {
+	// in case we want to stream the entries, CmdStartBookmark is sent, otherwise CmdBookmark command
+	command := CmdStartBookmark
+	if !streaming {
+		command = CmdBookmark
 	}
 
-	// Send starting/from entry number
-	if err := writeFullUint32ToConn(c.conn, uint32(len(bookmark))); err != nil {
-		return err
-	}
-	if err := writeBytesToConn(c.conn, bookmark); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// sendStartCmd sends a start command to the server, indicating
-// that the client wishes to start streaming from the given entry number.
-func (c *StreamClient) sendStartCmd(from uint64) error {
-	err := c.sendCommand(CmdStart)
-	if err != nil {
-		return err
-	}
-
-	// Send starting/from entry number
-	if err := writeFullUint64ToConn(c.conn, from); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// sendBookmarkCmd sends a bookmark get command to the server.
-// It sends CmdBookmark, followed by the bookmark length and bookmark itself.
-func (c *StreamClient) sendBookmarkCmd(bookmark []byte) error {
-	// Send CmdBookmark command
-	if err := c.sendCommand(CmdBookmark); err != nil {
+	// Send the command
+	if err := c.sendCommand(command); err != nil {
 		return err
 	}
 
@@ -75,6 +46,19 @@ func (c *StreamClient) sendBookmarkCmd(bookmark []byte) error {
 	return writeBytesToConn(c.conn, bookmark)
 }
 
+// sendStartCmd sends a start command to the server, indicating
+// that the client wishes to start streaming from the given entry number.
+func (c *StreamClient) sendStartCmd(from uint64) error {
+	err := c.sendCommand(CmdStart)
+	if err != nil {
+		return err
+	}
+
+	// Send starting/from entry number
+	return writeFullUint64ToConn(c.conn, from)
+}
+
+// sendEntryCmd sends the get data stream entry by number command to a TCP connection
 func (c *StreamClient) sendEntryCmd(entryNum uint64) error {
 	// Send CmdEntry command
 	if err := c.sendCommand(CmdEntry); err != nil {
@@ -82,11 +66,7 @@ func (c *StreamClient) sendEntryCmd(entryNum uint64) error {
 	}
 
 	// Send entry number
-	if err := writeFullUint64ToConn(c.conn, entryNum); err != nil {
-		return err
-	}
-
-	return nil
+	return writeFullUint64ToConn(c.conn, entryNum)
 }
 
 // sendHeaderCmd sends the header command to the server.

@@ -368,8 +368,8 @@ func (c *StreamClient) ReadAllEntriesToChannel() error {
 
 // runs the prerequisites for entries download
 func (c *StreamClient) initiateDownloadBookmark(bookmark []byte) error {
-	// send start command
-	if err := c.sendStartBookmarkCmd(bookmark); err != nil {
+	// send CmdStartBookmark command
+	if err := c.sendBookmarkCmd(bookmark, true); err != nil {
 		return err
 	}
 
