@@ -357,30 +357,12 @@ LOOP:
 
 					if entry.BatchNumber != dbBatchNum {
 						// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
-						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected", logPrefix),
+						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected. Triggering unwind", logPrefix),
 							"block", entry.L2BlockNumber, "ds batch", entry.BatchNumber, "db batch", dbBatchNum)
-
-						ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber)
-						if err != nil {
+						if err := rollback(logPrefix, eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber, tx, u); err != nil {
 							return err
 						}
-
-						log.Info(fmt.Sprintf("[%s] found ancestor block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
-
-						unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
-						if err != nil {
-							return err
-						}
-
-						log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
-						err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
-						if err != nil {
-							return err
-						}
-						u.UnwindTo(unwindBlockNum, unwindBlockHash)
-
 						cfg.dsClient.Stop()
-
 						return nil
 					}
 				}
@@ -409,24 +391,9 @@ LOOP:
 					// unwind/rollback blocks until the latest common ancestor block
 					log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, entry.L2BlockNumber),
 						"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
-					ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber)
-					if err != nil {
+					if err := rollback(logPrefix, eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber, tx, u); err != nil {
 						return err
 					}
-
-					log.Info(fmt.Sprintf("[%s] found ancestor block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
-
-					unwindBlockNum, unwindBlockHash, batchNum, err := resolveUnwindBlock(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
-					if err != nil {
-						return err
-					}
-
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
-					err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1)
-					if err != nil {
-						return err
-					}
-					u.UnwindTo(unwindBlockNum, unwindBlockHash)
 					cfg.dsClient.Stop()
 					return nil
 				}
@@ -1037,6 +1004,31 @@ func writeL2Block(eriDb ErigonDb, hermezDb HermezDb, l2Block *types.FullL2Block,
 	return nil
 }
 
+// rollback performs the unwinding of blocks:
+// 1. queries the latest common ancestor for datastream and db,
+// 2. resolves the unwind block (as the latest block in the previous batch, comparing to the found ancestor block)
+// 3. triggers the unwinding
+func rollback(logPrefix string, eriDb *erigon_db.ErigonDb, hermezDb *hermez_db.HermezDb,
+	dsQueryClient DatastreamClient, latestDSBlockNum uint64, tx kv.RwTx, u stagedsync.Unwinder) error {
+	ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, dsQueryClient, latestDSBlockNum)
+	if err != nil {
+		return err
+	}
+	log.Debug(fmt.Sprintf("[%s] The common ancestor for datastream and db is block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
+
+	unwindBlockNum, unwindBlockHash, batchNum, err := getUnwindPoint(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
+	if err != nil {
+		return err
+	}
+
+	if err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1); err != nil {
+		return err
+	}
+	log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
+	u.UnwindTo(unwindBlockNum, unwindBlockHash)
+	return nil
+}
+
 // findCommonAncestor searches the latest common ancestor block number and hash between the data stream and the local db.
 // The common ancestor block is the one that matches both l2 block hash and batch number.
 func findCommonAncestor(
@@ -1097,15 +1089,16 @@ func findCommonAncestor(
 	return *blockNumber, blockHash, nil
 }
 
-// resolveUnwindBlock resolves the unwind block as the latest block in the previous batch, relative to the found ancestor block.
-func resolveUnwindBlock(eriDb erigon_db.ReadOnlyErigonDb, hermezDb state.ReadOnlyHermezDb, ancestorBlockNum uint64, ancestorBlockHash common.Hash) (uint64, common.Hash, uint64, error) {
-	batchNum, err := hermezDb.GetBatchNoByL2Block(ancestorBlockNum)
+// getUnwindPoint resolves the unwind block as the latest block in the previous batch, relative to the provided block.
+func getUnwindPoint(eriDb erigon_db.ReadOnlyErigonDb, hermezDb state.ReadOnlyHermezDb, blockNum uint64, blockHash common.Hash) (uint64, common.Hash, uint64, error) {
+	batchNum, err := hermezDb.GetBatchNoByL2Block(blockNum)
 	if err != nil {
 		return 0, emptyHash, 0, err
 	}
 
 	if batchNum == 0 {
-		return ancestorBlockNum, ancestorBlockHash, batchNum, nil
+		return 0, emptyHash, 0,
+			fmt.Errorf("failed to find batch number for the block %d (%s)", blockNum, blockHash)
 	}
 
 	unwindBlockNum, err := hermezDb.GetHighestBlockInBatch(batchNum - 1)
