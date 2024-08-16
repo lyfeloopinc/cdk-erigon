@@ -189,14 +189,9 @@ func SpawnStageBatches(
 		return err
 	}
 
-	var dsQueryClient DatastreamClient
-	if cfg.dsQueryClientCreator != nil {
-		dsQueryClient, err = cfg.dsQueryClientCreator(ctx, cfg.zkCfg, latestForkId)
-	} else {
-		dsQueryClient, err = newStreamClient(ctx, cfg.zkCfg, latestForkId)
-	}
+	dsQueryClient, err := newStreamClient(ctx, cfg, latestForkId)
 	if err != nil {
-		log.Warn(fmt.Sprintf("[%s] Error when starting datastream client. Error: %s", logPrefix, err))
+		log.Warn(fmt.Sprintf("[%s] %s", logPrefix, err))
 		return err
 	}
 	defer dsQueryClient.Stop()
@@ -1126,11 +1121,25 @@ func resolveUnwindBlock(eriDb erigon_db.ReadOnlyErigonDb, hermezDb state.ReadOnl
 	return unwindBlockNum, unwindBlockHash, batchNum, nil
 }
 
-// newStreamClient instantiates new datastreamer client, starts it and provides a cleanup handler to be invoked at convenience.
-func newStreamClient(ctx context.Context, cfg *ethconfig.Zk, latestForkId uint64) (*client.StreamClient, error) {
-	dsClient := client.NewClient(ctx, cfg.L2DataStreamerUrl, cfg.DatastreamVersion, cfg.L2DataStreamerTimeout, uint16(latestForkId))
+// newStreamClient instantiates new datastreamer client and starts it.
+func newStreamClient(ctx context.Context, cfg BatchesCfg, latestForkId uint64) (DatastreamClient, error) {
+	var (
+		dsClient DatastreamClient
+		err      error
+	)
+
+	if cfg.dsQueryClientCreator != nil {
+		dsClient, err = cfg.dsQueryClientCreator(ctx, cfg.zkCfg, latestForkId)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create a datastream client. Reason: %w", err)
+		}
+	} else {
+		zkCfg := cfg.zkCfg
+		dsClient = client.NewClient(ctx, zkCfg.L2DataStreamerUrl, zkCfg.DatastreamVersion, zkCfg.L2DataStreamerTimeout, uint16(latestForkId))
+	}
+
 	if err := dsClient.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to start a datastream client. Reason: %w", err)
 	}
 
 	return dsClient, nil
