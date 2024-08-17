@@ -62,6 +62,17 @@ func (f *FileEntry) IsGerUpdate() bool {
 	return f.EntryType == EntryTypeGerUpdate
 }
 
+// Encode encodes file entry to the binary format
+func (f *FileEntry) Encode() []byte {
+	be := make([]byte, 1)
+	be[0] = f.PacketType
+	be = binary.BigEndian.AppendUint32(be, f.Length)
+	be = binary.BigEndian.AppendUint32(be, uint32(f.EntryType))
+	be = binary.BigEndian.AppendUint64(be, f.EntryNum)
+	be = append(be, f.Data...) //nolint:makezero
+	return be
+}
+
 // Decode/convert from binary bytes slice to FileEntry type
 func DecodeFileEntry(b []byte) (*FileEntry, error) {
 	if uint32(len(b)) < FileEntryMinSize {

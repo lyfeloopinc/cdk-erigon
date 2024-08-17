@@ -357,7 +357,7 @@ LOOP:
 
 					if entry.BatchNumber != dbBatchNum {
 						// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
-						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected. Triggering unwind", logPrefix),
+						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected. Triggering unwind...", logPrefix),
 							"block", entry.L2BlockNumber, "ds batch", entry.BatchNumber, "db batch", dbBatchNum)
 						if err := rollback(logPrefix, eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber, tx, u); err != nil {
 							return err

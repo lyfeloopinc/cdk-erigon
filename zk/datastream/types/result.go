@@ -41,9 +41,18 @@ func (r *ResultEntry) GetError() error {
 	return errors.New(string(r.ErrorStr))
 }
 
+// Encode encodes result entry to the binary format
+func (r *ResultEntry) Encode() []byte {
+	be := make([]byte, 1)
+	be[0] = r.PacketType
+	be = binary.BigEndian.AppendUint32(be, r.Length)
+	be = binary.BigEndian.AppendUint32(be, r.ErrorNum)
+	be = append(be, r.ErrorStr...) //nolint:makezero
+	return be
+}
+
 // Decode/convert from binary bytes slice to an entry type
 func DecodeResultEntry(b []byte) (*ResultEntry, error) {
-
 	if uint32(len(b)) < ResultEntryMinSize {
 		return &ResultEntry{}, fmt.Errorf("invalid result entry binary size. Expected: >=%d, got: %d", ResultEntryMinSize, len(b))
 	}
