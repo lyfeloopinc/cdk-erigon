@@ -852,7 +852,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		// check contract addresses in config against L1
 		success, err := l1ContractAddressCheck(ctx, cfg.Zk, backend.l1Syncer)
 		if !success || err != nil {
-			//log.Warn("Contract address check failed", "success", success, "err", err)
+			log.Warn("Contract address check failed", "success", success, "err", err)
 			panic("Contract address check failed")
 		}
 		log.Info("Contract address check passed")
