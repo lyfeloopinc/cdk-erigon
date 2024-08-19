@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -261,4 +263,15 @@ func Test_readParsedProto(t *testing.T) {
 	expectedL2Block := types.ConvertToFullL2Block(l2Block)
 	expectedL2Block.L2Txs = append(expectedL2Block.L2Txs, *expectedL2Tx)
 	require.Equal(t, expectedL2Block, parsedEntry)
+}
+
+func TestStreamClient_GetLatestL2Block(t *testing.T) {
+	// TODO: WriteBlockWithBatchStartToStream
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+	}))
+	defer srv.Close()
+
+	c := NewClient(context.Background(), srv.URL, 2, 2*time.Second, 1)
+	c.GetLatestL2Block()
 }
