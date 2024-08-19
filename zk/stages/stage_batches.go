@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -84,7 +83,7 @@ type HermezDb interface {
 type DatastreamClient interface {
 	ReadAllEntriesToChannel() error
 	GetEntryChan() chan interface{}
-	GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error)
+	GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, int, error)
 	GetLatestL2Block() (*types.FullL2Block, error)
 	GetLastWrittenTimeAtomic() *atomic.Int64
 	GetStreamingAtomic() *atomic.Bool
@@ -377,7 +376,7 @@ LOOP:
 
 				dsParentBlockHash := lastHash
 				if dsParentBlockHash == emptyHash {
-					parentBlockDS, err := dsQueryClient.GetL2BlockByNumber(entry.L2BlockNumber - 1)
+					parentBlockDS, _, err := dsQueryClient.GetL2BlockByNumber(entry.L2BlockNumber - 1)
 					if err != nil {
 						return err
 					}
@@ -1037,10 +1036,10 @@ func findCommonAncestor(
 		}
 
 		midBlockNum := (startBlockNum + endBlockNum) / 2
-		midBlockDataStream, err := dsClient.GetL2BlockByNumber(midBlockNum)
+		midBlockDataStream, errCode, err := dsClient.GetL2BlockByNumber(midBlockNum)
 		if err != nil &&
 			// the required block might not be in the data stream, so ignore that error
-			!strings.Contains(err.Error(), client.ErrBadFromBookmarkStr) {
+			errCode != types.CmdErrBadFromBookmark {
 			return 0, emptyHash, err
 		}
 

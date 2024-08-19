@@ -54,14 +54,14 @@ func (c *TestDatastreamClient) GetErrChan() chan error {
 	return c.errChan
 }
 
-func (c *TestDatastreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
+func (c *TestDatastreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, int, error) {
 	for _, l2Block := range c.fullL2Blocks {
 		if l2Block.L2BlockNumber == blockNum {
-			return &l2Block, nil
+			return &l2Block, types.CmdErrOK, nil
 		}
 	}
 
-	return nil, nil
+	return nil, -1, nil
 }
 
 func (c *TestDatastreamClient) GetLatestL2Block() (*types.FullL2Block, error) {

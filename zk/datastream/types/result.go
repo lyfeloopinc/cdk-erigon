@@ -12,11 +12,12 @@ const (
 	ResultEntryMinSize = uint32(9)
 
 	// Command errors
-	CmdErrOK             = 0
-	CmdErrAlreadyStarted = 1
-	CmdErrAlreadyStopped = 2
-	CmdErrBadFromEntry   = 3
-	CmdErrInvalidCommand = 9
+	CmdErrOK              = 0 // CmdErrOK for no error
+	CmdErrAlreadyStarted  = 1 // CmdErrAlreadyStarted for client already started error
+	CmdErrAlreadyStopped  = 2 // CmdErrAlreadyStopped for client already stopped error
+	CmdErrBadFromEntry    = 3 // CmdErrBadFromEntry for invalid starting entry number
+	CmdErrBadFromBookmark = 4 // CmdErrBadFromBookmark for invalid starting bookmark
+	CmdErrInvalidCommand  = 9 // CmdErrInvalidCommand for invalid/unknown command error
 )
 
 type ResultEntry struct {

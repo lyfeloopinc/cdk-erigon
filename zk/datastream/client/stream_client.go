@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/0xPolygonHermez/zkevm-data-streamer/datastreamer"
 	"github.com/ledgerwatch/erigon/zk/datastream/proto/github.com/0xPolygonHermez/zkevm-node/state/datastream"
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
 	"github.com/ledgerwatch/log/v3"
@@ -33,9 +32,6 @@ const (
 var (
 	// ErrFileEntryNotFound denotes error that is returned when the certain file entry is not found in the datastream
 	ErrFileEntryNotFound = errors.New("file entry not found")
-
-	// ErrBadFromBookmarkStr denotes the error message for CmdErrBadFromBookmark error code from data stream library
-	ErrBadFromBookmarkStr = datastreamer.StrCommandErrors[datastreamer.CmdErrBadFromBookmark]
 )
 
 type StreamClient struct {
@@ -96,9 +92,9 @@ func (c *StreamClient) GetEntryChan() chan interface{} {
 	return c.entryChan
 }
 
-func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, error) {
+func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, int, error) {
 	if _, err := c.EnsureConnected(); err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 	defer c.Stop()
 
@@ -111,23 +107,24 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
 	bookmarkRaw, err := bookmark.Marshal()
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 
-	if err := c.initiateDownloadBookmark(bookmarkRaw); err != nil {
-		return nil, err
+	re, err := c.initiateDownloadBookmark(bookmarkRaw)
+	if err != nil {
+		return nil, int(re.ErrorNum), err
 	}
 
 	for l2Block == nil {
 		select {
 		case <-c.ctx.Done():
-			return l2Block, nil
+			return l2Block, int(re.ErrorNum), nil
 		default:
 		}
 
 		parsedEntry, err := c.readParsedProto()
 		if err != nil {
-			return nil, err
+			return nil, -1, err
 		}
 
 		l2Block, isL2Block = parsedEntry.(*types.FullL2Block)
@@ -137,10 +134,10 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 	}
 
 	if l2Block.L2BlockNumber != blockNum {
-		return nil, fmt.Errorf("expected block number %d but got %d", blockNum, l2Block.L2BlockNumber)
+		return nil, -1, fmt.Errorf("expected block number %d but got %d", blockNum, l2Block.L2BlockNumber)
 	}
 
-	return l2Block, nil
+	return l2Block, types.CmdErrOK, nil
 }
 
 func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error) {
@@ -283,7 +280,7 @@ func (c *StreamClient) ExecutePerFile(bookmark *types.BookmarkProto, function fu
 		return fmt.Errorf("failed to marshal bookmark: %v", err)
 	}
 
-	if err := c.initiateDownloadBookmark(protoBookmark); err != nil {
+	if _, err := c.initiateDownloadBookmark(protoBookmark); err != nil {
 		return err
 	}
 	count := uint64(0)
@@ -343,7 +340,7 @@ func (c *StreamClient) ReadAllEntriesToChannel() error {
 	}
 
 	// send start command
-	if err := c.initiateDownloadBookmark(protoBookmark); err != nil {
+	if _, err := c.initiateDownloadBookmark(protoBookmark); err != nil {
 		return err
 	}
 
@@ -367,30 +364,31 @@ func (c *StreamClient) ReadAllEntriesToChannel() error {
 }
 
 // runs the prerequisites for entries download
-func (c *StreamClient) initiateDownloadBookmark(bookmark []byte) error {
+func (c *StreamClient) initiateDownloadBookmark(bookmark []byte) (*types.ResultEntry, error) {
 	// send CmdStartBookmark command
 	if err := c.sendBookmarkCmd(bookmark, true); err != nil {
-		return err
+		return nil, err
 	}
 
-	if err := c.afterStartCommand(); err != nil {
-		return fmt.Errorf("after start command error: %v", err)
+	re, err := c.afterStartCommand()
+	if err != nil {
+		return re, fmt.Errorf("after start command error: %v", err)
 	}
 
-	return nil
+	return re, nil
 }
 
-func (c *StreamClient) afterStartCommand() error {
+func (c *StreamClient) afterStartCommand() (*types.ResultEntry, error) {
 	re, err := c.readPacketAndDecodeResultEntry()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := re.GetError(); err != nil {
-		return fmt.Errorf("got Result error code %d: %v", re.ErrorNum, err)
+		return re, fmt.Errorf("got Result error code %d: %v", re.ErrorNum, err)
 	}
 
-	return nil
+	return re, nil
 }
 
 // reads all entries from the server and sends them to a channel
