@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -40,7 +41,7 @@ func Test_readHeaderEntry(t *testing.T) {
 			name:           "Invalid byte array length",
 			input:          []byte{20, 21, 22, 23, 24, 20},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("failed to read header bytes reading from server: unexpected EOF"),
+			expectedError:  errors.New("failed to read header bytes reading from server: unexpected EOF"),
 		},
 	}
 
@@ -98,13 +99,13 @@ func Test_readResultEntry(t *testing.T) {
 			name:           "Invalid byte array length",
 			input:          []byte{20, 21, 22, 23, 24, 20},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("failed to read main result bytes reading from server: unexpected EOF"),
+			expectedError:  errors.New("failed to read main result bytes reading from server: unexpected EOF"),
 		},
 		{
 			name:           "Invalid error length",
 			input:          []byte{0, 0, 0, 12, 0, 0, 0, 0, 20, 21},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("failed to read result errStr bytes reading from server: unexpected EOF"),
+			expectedError:  errors.New("failed to read result errStr bytes reading from server: unexpected EOF"),
 		},
 	}
 
@@ -163,18 +164,18 @@ func Test_readFileEntry(t *testing.T) {
 			name:           "Invalid packet type",
 			input:          []byte{5, 0, 0, 0, 17, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 45},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("expected data packet type 2 or 254 and received 5"),
+			expectedError:  errors.New("expected data packet type 2 or 254 and received 5"),
 		},
 		{
 			name:           "Invalid byte array length",
 			input:          []byte{2, 21, 22, 23, 24, 20},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("error reading file bytes: reading from server: unexpected EOF"),
+			expectedError:  errors.New("error reading file bytes: reading from server: unexpected EOF"),
 		}, {
 			name:           "Invalid data length",
 			input:          []byte{2, 0, 0, 0, 31, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 45, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 64},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("error reading file data bytes: reading from server: unexpected EOF"),
+			expectedError:  errors.New("error reading file data bytes: reading from server: unexpected EOF"),
 		},
 	}
 	for _, testCase := range testCases {
@@ -416,9 +417,11 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 		close(errCh)
 	}()
 
+	// ACT
 	l2Block, err := c.GetLatestL2Block()
 	require.NoError(t, err)
 
+	// ASSERT
 	serverErr := <-errCh
 	require.NoError(t, serverErr)
 
