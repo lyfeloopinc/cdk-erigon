@@ -4,8 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,18 +198,12 @@ func Test_readFileEntry(t *testing.T) {
 
 func Test_readParsedProto(t *testing.T) {
 	c := NewClient(context.Background(), "", 0, 0, 0)
-	server, conn := net.Pipe()
-	c.conn = conn
-
-	createFileEntry := func(entryType types.EntryType, num uint64, data []byte) *types.FileEntry {
-		return &types.FileEntry{
-			PacketType: PtData,
-			Length:     types.FileEntryMinSize + uint32(len(data)),
-			EntryType:  entryType,
-			EntryNum:   num,
-			Data:       data,
-		}
-	}
+	serverConn, clientConn := net.Pipe()
+	c.conn = clientConn
+	defer func() {
+		serverConn.Close()
+		clientConn.Close()
+	}()
 
 	l2Block := &datastream.L2Block{
 		Number:        3,
@@ -237,41 +230,50 @@ func Test_readParsedProto(t *testing.T) {
 	l2BlockEndRaw, err := l2BlockEnd.Marshal()
 	require.NoError(t, err)
 
-	fileEntries := make([]*types.FileEntry, 3)
-	fileEntries[0] = createFileEntry(types.EntryTypeL2Block, 1, l2BlockRaw)
-	fileEntries[1] = createFileEntry(types.EntryTypeL2Tx, 2, l2TxRaw)
-	fileEntries[2] = createFileEntry(types.EntryTypeL2BlockEnd, 3, l2BlockEndRaw)
-
 	var (
-		writeErr    error
-		parsedEntry interface{}
+		errCh = make(chan error)
+		wg    sync.WaitGroup
 	)
+	wg.Add(1)
 
 	go func() {
-		for _, fe := range fileEntries {
-			_, writeErr = server.Write(fe.Encode())
+		defer wg.Done()
+		fileEntries := []*types.FileEntry{
+			createFileEntry(t, types.EntryTypeL2Block, 1, l2BlockRaw),
+			createFileEntry(t, types.EntryTypeL2Tx, 2, l2TxRaw),
+			createFileEntry(t, types.EntryTypeL2BlockEnd, 3, l2BlockEndRaw),
 		}
-		server.Close()
+		for _, fe := range fileEntries {
+			_, writeErr := serverConn.Write(fe.Encode())
+			if writeErr != nil {
+				errCh <- writeErr
+				break
+			}
+		}
 	}()
 
-	require.NoError(t, writeErr)
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
 
-	parsedEntry, err = c.readParsedProto()
+	parsedEntry, err := c.readParsedProto()
 	require.NoError(t, err)
-	require.NoError(t, err)
+	serverErr := <-errCh
+	require.NoError(t, serverErr)
 	expectedL2Tx := types.ConvertToL2TransactionProto(l2Tx)
 	expectedL2Block := types.ConvertToFullL2Block(l2Block)
 	expectedL2Block.L2Txs = append(expectedL2Block.L2Txs, *expectedL2Tx)
 	require.Equal(t, expectedL2Block, parsedEntry)
 }
 
-func TestStreamClient_GetLatestL2Block(t *testing.T) {
-	// TODO: WriteBlockWithBatchStartToStream
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
-	}))
-	defer srv.Close()
-
-	c := NewClient(context.Background(), srv.URL, 2, 2*time.Second, 1)
-	c.GetLatestL2Block()
+func createFileEntry(t *testing.T, entryType types.EntryType, num uint64, data []byte) *types.FileEntry {
+	t.Helper()
+	return &types.FileEntry{
+		PacketType: PtData,
+		Length:     types.FileEntryMinSize + uint32(len(data)),
+		EntryType:  entryType,
+		EntryNum:   num,
+		Data:       data,
+	}
 }
