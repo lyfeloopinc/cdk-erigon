@@ -105,7 +105,7 @@ func TestUnwindBatches(t *testing.T) {
 		}
 		size, err := tx3.BucketSize(bucket)
 		require.NoError(t, err)
-		require.Equal(t, bucketSized[bucket], size, "butcket %s is not empty", bucket)
+		require.Equal(t, bucketSized[bucket], size, "bucket %s is not empty", bucket)
 	}
 }
 
@@ -129,7 +129,7 @@ func TestFindCommonAncestor(t *testing.T) {
 			dsBlocksCount:    10,
 			latestBlockNum:   5,
 			expectedBlockNum: 5,
-			expectedHash:     common.HexToHash("0x5"),
+			expectedHash:     common.Hash{byte(5)},
 			expectedError:    nil,
 		},
 		{
@@ -138,7 +138,7 @@ func TestFindCommonAncestor(t *testing.T) {
 			dsBlocksCount:    10,
 			latestBlockNum:   10,
 			expectedBlockNum: 10,
-			expectedHash:     common.HexToHash("0xa"),
+			expectedHash:     common.Hash{byte(10)},
 			expectedError:    nil,
 		},
 		{
