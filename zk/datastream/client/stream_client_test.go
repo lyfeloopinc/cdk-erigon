@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
@@ -267,6 +268,165 @@ func Test_readParsedProto(t *testing.T) {
 	require.Equal(t, expectedL2Block, parsedEntry)
 }
 
+func TestStreamClient_GetLatestL2Block(t *testing.T) {
+	const u64BytesLength = 8
+
+	serverConn, clientConn := net.Pipe()
+	defer func() {
+		serverConn.Close()
+		clientConn.Close()
+	}()
+
+	// retrieveUint64FromConn from the connection in order to unblock future write operations
+	retrieveUint64FromConn := func(conn net.Conn) (uint64, error) {
+		u64Raw, err := readBuffer(conn, u64BytesLength)
+		if err != nil {
+			return 0, err
+		}
+
+		return binary.BigEndian.Uint64(u64Raw), nil
+	}
+
+	// Set up the client with the server connection
+	c := NewClient(context.Background(), "", 0, 0, 0)
+	c.conn = clientConn
+
+	expectedL2Block := &datastream.L2Block{
+		Number:        5,
+		BatchNumber:   1,
+		Timestamp:     uint64(time.Now().UnixMilli()),
+		Hash:          common.HexToHash("0x123456").Bytes(),
+		BlockGasLimit: 10000000,
+	}
+	l2BlockProto := &types.L2BlockProto{L2Block: expectedL2Block}
+	l2BlockRaw, err := l2BlockProto.Marshal()
+	require.NoError(t, err)
+
+	var (
+		errCh = make(chan error)
+		wg    sync.WaitGroup
+	)
+	wg.Add(1)
+
+	// Prepare the server to send responses in a separate goroutine
+	go func() {
+		defer wg.Done()
+
+		// Read the command and the stream type to avoid future writes to block
+		actualCmd, err := retrieveUint64FromConn(serverConn)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if actualCmd != uint64(CmdHeader) {
+			errCh <- fmt.Errorf("mismatch between expected %d and actual %d command", CmdHeader, actualCmd)
+			return
+		}
+
+		// Read the stream type
+		actualStreamType, err := retrieveUint64FromConn(serverConn)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if actualStreamType != uint64(StSequencer) {
+			errCh <- fmt.Errorf("mismatch between expected %d and actual %d stream type", StSequencer, actualStreamType)
+			return
+		}
+
+		// Write result entry
+		re := &types.ResultEntry{
+			PacketType: PtResult,
+			ErrorNum:   types.CmdErrOK,
+			Length:     types.ResultEntryMinSize,
+			ErrorStr:   nil,
+		}
+		_, err = serverConn.Write(re.Encode())
+		if err != nil {
+			errCh <- fmt.Errorf("failed to write result entry to the connection: %w", err)
+		}
+
+		// Write header entry
+		he := &types.HeaderEntry{
+			PacketType:   uint8(CmdHeader),
+			HeadLength:   types.HeaderSize,
+			Version:      2,
+			SystemId:     1,
+			StreamType:   types.StreamType(StSequencer),
+			TotalEntries: 4,
+		}
+		_, err = serverConn.Write(he.Encode())
+		if err != nil {
+			errCh <- fmt.Errorf("failed to write header entry to the connection: %w", err)
+		}
+
+		// Read the command
+		actualCmd, err = retrieveUint64FromConn(serverConn)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if actualCmd != uint64(CmdEntry) {
+			errCh <- fmt.Errorf("mismatch between expected %d and actual %d command", CmdEntry, actualCmd)
+			return
+		}
+
+		// Read the stream type
+		actualStreamType, err = retrieveUint64FromConn(serverConn)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if actualStreamType != uint64(StSequencer) {
+			errCh <- fmt.Errorf("mismatch between expected %d and actual %d stream type", StSequencer, actualStreamType)
+			return
+		}
+
+		// Read the entry number
+		actualEntryNum, err := retrieveUint64FromConn(serverConn)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if actualEntryNum != he.TotalEntries-1 {
+			errCh <- fmt.Errorf("mismatch between expected %d and actual %d latest entry num", he.TotalEntries-1, actualEntryNum)
+			return
+		}
+
+		// Write the ResultEntry
+		_, err = serverConn.Write(re.Encode())
+		if err != nil {
+			errCh <- fmt.Errorf("failed to write result entry to the connection: %w", err)
+			return
+		}
+
+		// Write the FileEntry containing the L2 block information
+		fe := createFileEntry(t, types.EntryTypeL2Block, 1, l2BlockRaw)
+		_, err = serverConn.Write(fe.Encode())
+		if err != nil {
+			errCh <- fmt.Errorf("failed to write the l2 block file entry to the connection: %w", err)
+			return
+		}
+
+		serverConn.Close()
+	}()
+
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+
+	l2Block, err := c.GetLatestL2Block()
+	require.NoError(t, err)
+
+	serverErr := <-errCh
+	require.NoError(t, serverErr)
+
+	expectedFullL2Block := types.ConvertToFullL2Block(expectedL2Block)
+	require.Equal(t, expectedFullL2Block, l2Block)
+}
+
+// createFileEntry is a helper function that creates FileEntry
 func createFileEntry(t *testing.T, entryType types.EntryType, num uint64, data []byte) *types.FileEntry {
 	t.Helper()
 	return &types.FileEntry{
