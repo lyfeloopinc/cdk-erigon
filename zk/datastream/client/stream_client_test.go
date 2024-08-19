@@ -278,14 +278,18 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 		clientConn.Close()
 	}()
 
-	// retrieveUint64FromConn from the connection in order to unblock future write operations
-	retrieveUint64FromConn := func(conn net.Conn) (uint64, error) {
-		u64Raw, err := readBuffer(conn, u64BytesLength)
+	// readAndValidateUint64 from the connection in order to unblock future write operations
+	readAndValidateUint64 := func(conn net.Conn, expected uint64, paramName string) error {
+		valueRaw, err := readBuffer(conn, u64BytesLength)
 		if err != nil {
-			return 0, err
+			return fmt.Errorf("failed to read %s parameter: %w", paramName, err)
 		}
 
-		return binary.BigEndian.Uint64(u64Raw), nil
+		value := binary.BigEndian.Uint64(valueRaw)
+		if value != expected {
+			return fmt.Errorf("%s parameter value mismatch between expected %d and actual %d", paramName, expected, value)
+		}
+		return nil
 	}
 
 	// Set up the client with the server connection
@@ -314,24 +318,14 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 		defer wg.Done()
 
 		// Read the command and the stream type to avoid future writes to block
-		actualCmd, err := retrieveUint64FromConn(serverConn)
-		if err != nil {
+		if err := readAndValidateUint64(serverConn, uint64(CmdHeader), "command"); err != nil {
 			errCh <- err
-			return
-		}
-		if actualCmd != uint64(CmdHeader) {
-			errCh <- fmt.Errorf("mismatch between expected %d and actual %d command", CmdHeader, actualCmd)
 			return
 		}
 
 		// Read the stream type
-		actualStreamType, err := retrieveUint64FromConn(serverConn)
-		if err != nil {
+		if err := readAndValidateUint64(serverConn, uint64(StSequencer), "stream type"); err != nil {
 			errCh <- err
-			return
-		}
-		if actualStreamType != uint64(StSequencer) {
-			errCh <- fmt.Errorf("mismatch between expected %d and actual %d stream type", StSequencer, actualStreamType)
 			return
 		}
 
@@ -362,35 +356,21 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 		}
 
 		// Read the command
-		actualCmd, err = retrieveUint64FromConn(serverConn)
-		if err != nil {
+		if err := readAndValidateUint64(serverConn, uint64(CmdEntry), "command"); err != nil {
 			errCh <- err
-			return
-		}
-		if actualCmd != uint64(CmdEntry) {
-			errCh <- fmt.Errorf("mismatch between expected %d and actual %d command", CmdEntry, actualCmd)
 			return
 		}
 
 		// Read the stream type
-		actualStreamType, err = retrieveUint64FromConn(serverConn)
-		if err != nil {
+		if err := readAndValidateUint64(serverConn, uint64(StSequencer), "stream type"); err != nil {
 			errCh <- err
-			return
-		}
-		if actualStreamType != uint64(StSequencer) {
-			errCh <- fmt.Errorf("mismatch between expected %d and actual %d stream type", StSequencer, actualStreamType)
 			return
 		}
 
 		// Read the entry number
-		actualEntryNum, err := retrieveUint64FromConn(serverConn)
-		if err != nil {
+
+		if err := readAndValidateUint64(serverConn, he.TotalEntries-1, "entry number"); err != nil {
 			errCh <- err
-			return
-		}
-		if actualEntryNum != he.TotalEntries-1 {
-			errCh <- fmt.Errorf("mismatch between expected %d and actual %d latest entry num", he.TotalEntries-1, actualEntryNum)
 			return
 		}
 
