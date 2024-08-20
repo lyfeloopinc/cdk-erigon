@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -207,23 +208,12 @@ func Test_readParsedProto(t *testing.T) {
 		clientConn.Close()
 	}()
 
-	l2Block := &datastream.L2Block{
-		Number:        3,
-		BatchNumber:   1,
-		Timestamp:     uint64(time.Now().UnixMilli()),
-		Hash:          common.HexToHash("0x123456").Bytes(),
-		BlockGasLimit: 10000000,
-	}
+	l2Block, l2Txs := createL2BlockAndTransactions(t, 3, 1)
 	l2BlockProto := &types.L2BlockProto{L2Block: l2Block}
 	l2BlockRaw, err := l2BlockProto.Marshal()
 	require.NoError(t, err)
 
-	l2Tx := &datastream.Transaction{
-		L2BlockNumber: l2Block.GetNumber(),
-		Index:         0,
-		IsValid:       true,
-		Debug:         &datastream.Debug{Message: "Hello world!"},
-	}
+	l2Tx := l2Txs[0]
 	l2TxProto := &types.TxProto{Transaction: l2Tx}
 	l2TxRaw, err := l2TxProto.Marshal()
 	require.NoError(t, err)
@@ -270,39 +260,16 @@ func Test_readParsedProto(t *testing.T) {
 }
 
 func TestStreamClient_GetLatestL2Block(t *testing.T) {
-	const u64BytesLength = 8
-
 	serverConn, clientConn := net.Pipe()
 	defer func() {
 		serverConn.Close()
 		clientConn.Close()
 	}()
 
-	// readAndValidateUint64 from the connection in order to unblock future write operations
-	readAndValidateUint64 := func(conn net.Conn, expected uint64, paramName string) error {
-		valueRaw, err := readBuffer(conn, u64BytesLength)
-		if err != nil {
-			return fmt.Errorf("failed to read %s parameter: %w", paramName, err)
-		}
-
-		value := binary.BigEndian.Uint64(valueRaw)
-		if value != expected {
-			return fmt.Errorf("%s parameter value mismatch between expected %d and actual %d", paramName, expected, value)
-		}
-		return nil
-	}
-
-	// Set up the client with the server connection
 	c := NewClient(context.Background(), "", 0, 0, 0)
 	c.conn = clientConn
 
-	expectedL2Block := &datastream.L2Block{
-		Number:        5,
-		BatchNumber:   1,
-		Timestamp:     uint64(time.Now().UnixMilli()),
-		Hash:          common.HexToHash("0x123456").Bytes(),
-		BlockGasLimit: 10000000,
-	}
+	expectedL2Block, _ := createL2BlockAndTransactions(t, 5, 0)
 	l2BlockProto := &types.L2BlockProto{L2Block: expectedL2Block}
 	l2BlockRaw, err := l2BlockProto.Marshal()
 	require.NoError(t, err)
@@ -317,31 +284,26 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		// Read the command and the stream type to avoid future writes to block
-		if err := readAndValidateUint64(serverConn, uint64(CmdHeader), "command"); err != nil {
+		// Read the Command
+		if err := readAndValidateUint(t, serverConn, uint64(CmdHeader), "command"); err != nil {
 			errCh <- err
 			return
 		}
 
-		// Read the stream type
-		if err := readAndValidateUint64(serverConn, uint64(StSequencer), "stream type"); err != nil {
+		// Read the StreamType
+		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), "stream type"); err != nil {
 			errCh <- err
 			return
 		}
 
-		// Write result entry
-		re := &types.ResultEntry{
-			PacketType: PtResult,
-			ErrorNum:   types.CmdErrOK,
-			Length:     types.ResultEntryMinSize,
-			ErrorStr:   nil,
-		}
+		// Write ResultEntry
+		re := createResultEntry(t)
 		_, err = serverConn.Write(re.Encode())
 		if err != nil {
 			errCh <- fmt.Errorf("failed to write result entry to the connection: %w", err)
 		}
 
-		// Write header entry
+		// Write HeaderEntry
 		he := &types.HeaderEntry{
 			PacketType:   uint8(CmdHeader),
 			HeadLength:   types.HeaderSize,
@@ -355,21 +317,20 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 			errCh <- fmt.Errorf("failed to write header entry to the connection: %w", err)
 		}
 
-		// Read the command
-		if err := readAndValidateUint64(serverConn, uint64(CmdEntry), "command"); err != nil {
+		// Read the Command
+		if err := readAndValidateUint(t, serverConn, uint64(CmdEntry), "command"); err != nil {
 			errCh <- err
 			return
 		}
 
-		// Read the stream type
-		if err := readAndValidateUint64(serverConn, uint64(StSequencer), "stream type"); err != nil {
+		// Read the StreamType
+		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), "stream type"); err != nil {
 			errCh <- err
 			return
 		}
 
-		// Read the entry number
-
-		if err := readAndValidateUint64(serverConn, he.TotalEntries-1, "entry number"); err != nil {
+		// Read the EntryNumber
+		if err := readAndValidateUint(t, serverConn, he.TotalEntries-1, "entry number"); err != nil {
 			errCh <- err
 			return
 		}
@@ -409,6 +370,162 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 	require.Equal(t, expectedFullL2Block, l2Block)
 }
 
+func TestStreamClient_GetL2BlockByNumber(t *testing.T) {
+	const blockNum = uint64(5)
+
+	serverConn, clientConn := net.Pipe()
+	defer func() {
+		serverConn.Close()
+		clientConn.Close()
+	}()
+
+	c := NewClient(context.Background(), "", 0, 0, 0)
+	c.conn = clientConn
+
+	var (
+		errCh = make(chan error)
+		wg    sync.WaitGroup
+	)
+	wg.Add(1)
+
+	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
+	bookmarkRaw, err := bookmark.Marshal()
+	require.NoError(t, err)
+
+	expectedL2Block, l2Txs := createL2BlockAndTransactions(t, blockNum, 3)
+	l2BlockProto := &types.L2BlockProto{L2Block: expectedL2Block}
+	l2BlockRaw, err := l2BlockProto.Marshal()
+	require.NoError(t, err)
+
+	l2TxsRaw := make([][]byte, 0, len(l2Txs))
+	for _, l2Tx := range l2Txs {
+		l2TxProto := &types.TxProto{Transaction: l2Tx}
+		l2TxRaw, err := l2TxProto.Marshal()
+		require.NoError(t, err)
+
+		l2TxsRaw = append(l2TxsRaw, l2TxRaw)
+	}
+
+	l2BlockEnd := &types.L2BlockEndProto{Number: expectedL2Block.GetNumber()}
+	l2BlockEndRaw, err := l2BlockEnd.Marshal()
+	require.NoError(t, err)
+
+	// Prepare the server to send responses in a separate goroutine
+	go func() {
+		defer wg.Done()
+
+		// Read the command
+		if err := readAndValidateUint(t, serverConn, uint64(CmdStartBookmark), "command"); err != nil {
+			errCh <- err
+			return
+		}
+
+		// Read the stream type
+		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), "stream type"); err != nil {
+			errCh <- err
+			return
+		}
+
+		// Read the bookmark length
+		if err := readAndValidateUint(t, serverConn, uint32(len(bookmarkRaw)), "bookmark length"); err != nil {
+			errCh <- err
+			return
+		}
+
+		// Read the actual bookmark
+		actualBookmarkRaw, err := readBuffer(serverConn, uint32(len(bookmarkRaw)))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if !bytes.Equal(bookmarkRaw, actualBookmarkRaw) {
+			errCh <- fmt.Errorf("mismatch between expected %v and actual bookmark %v", bookmarkRaw, actualBookmarkRaw)
+			return
+		}
+
+		// Write ResultEntry
+		re := createResultEntry(t)
+		if _, err := serverConn.Write(re.Encode()); err != nil {
+			errCh <- err
+			return
+		}
+
+		// Write File entries (EntryTypeL2Block, EntryTypeL2Tx and EntryTypeL2BlockEnd)
+		fileEntries := make([]*types.FileEntry, 0, len(l2Txs))
+		fileEntries = append(fileEntries, createFileEntry(t, types.EntryTypeL2Block, 1, l2BlockRaw))
+		entryNum := uint64(2)
+		for _, l2TxRaw := range l2TxsRaw {
+			fileEntries = append(fileEntries, createFileEntry(t, types.EntryTypeL2Tx, entryNum, l2TxRaw))
+			entryNum++
+		}
+		fileEntries = append(fileEntries, createFileEntry(t, types.EntryTypeL2BlockEnd, entryNum, l2BlockEndRaw))
+
+		for _, fe := range fileEntries {
+			if _, err := serverConn.Write(fe.Encode()); err != nil {
+				errCh <- err
+				return
+			}
+		}
+
+		serverConn.Close()
+	}()
+
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+
+	l2Block, errCode, err := c.GetL2BlockByNumber(blockNum)
+	require.NoError(t, err)
+	require.Equal(t, types.CmdErrOK, errCode)
+	serverErr := <-errCh
+	require.NoError(t, serverErr)
+
+	l2TxsProto := make([]types.L2TransactionProto, 0, len(l2Txs))
+	for _, tx := range l2Txs {
+		l2TxProto := types.ConvertToL2TransactionProto(tx)
+		l2TxsProto = append(l2TxsProto, *l2TxProto)
+	}
+	expectedFullL2Block := types.ConvertToFullL2Block(expectedL2Block)
+	expectedFullL2Block.L2Txs = l2TxsProto
+	require.Equal(t, expectedFullL2Block, l2Block)
+}
+
+// readAndValidateUint reads the uint value and validates it against expected value from the connection in order to unblock future write operations
+func readAndValidateUint(t *testing.T, conn net.Conn, expected interface{}, paramName string) error {
+	t.Helper()
+
+	var length uint32
+	switch expected.(type) {
+	case uint64:
+		length = 8
+	case uint32:
+		length = 4
+	default:
+		return fmt.Errorf("unsupported expected type for %s: %T", paramName, expected)
+	}
+
+	valueRaw, err := readBuffer(conn, length)
+	if err != nil {
+		return fmt.Errorf("failed to read %s parameter: %w", paramName, err)
+	}
+
+	switch expectedValue := expected.(type) {
+	case uint64:
+		value := binary.BigEndian.Uint64(valueRaw)
+		if value != expectedValue {
+			return fmt.Errorf("%s parameter value mismatch between expected %d and actual %d", paramName, expectedValue, value)
+		}
+	case uint32:
+		value := binary.BigEndian.Uint32(valueRaw)
+		if value != expectedValue {
+			return fmt.Errorf("%s parameter value mismatch between expected %d and actual %d", paramName, expectedValue, value)
+		}
+	}
+
+	return nil
+}
+
 // createFileEntry is a helper function that creates FileEntry
 func createFileEntry(t *testing.T, entryType types.EntryType, num uint64, data []byte) *types.FileEntry {
 	t.Helper()
@@ -419,4 +536,39 @@ func createFileEntry(t *testing.T, entryType types.EntryType, num uint64, data [
 		EntryNum:   num,
 		Data:       data,
 	}
+}
+
+func createResultEntry(t *testing.T) *types.ResultEntry {
+	t.Helper()
+	return &types.ResultEntry{
+		PacketType: PtResult,
+		ErrorNum:   types.CmdErrOK,
+		Length:     types.ResultEntryMinSize,
+		ErrorStr:   nil,
+	}
+}
+
+// createL2BlockAndTransactions creates a single L2 block with the transactions
+func createL2BlockAndTransactions(t *testing.T, blockNum uint64, txnCount int) (*datastream.L2Block, []*datastream.Transaction) {
+	t.Helper()
+	txns := make([]*datastream.Transaction, 0, txnCount)
+	l2Block := &datastream.L2Block{
+		Number:        blockNum,
+		BatchNumber:   1,
+		Timestamp:     uint64(time.Now().UnixMilli()),
+		Hash:          common.HexToHash("0x123456987654321").Bytes(),
+		BlockGasLimit: 1000000000,
+	}
+
+	for i := 0; i < txnCount; i++ {
+		txns = append(txns,
+			&datastream.Transaction{
+				L2BlockNumber: l2Block.GetNumber(),
+				Index:         uint64(i),
+				IsValid:       true,
+				Debug:         &datastream.Debug{Message: fmt.Sprintf("Hello %d. transaction!", i+1)},
+			})
+	}
+
+	return l2Block, txns
 }
