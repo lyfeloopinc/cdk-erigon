@@ -92,6 +92,9 @@ func (c *StreamClient) GetEntryChan() chan interface{} {
 	return c.entryChan
 }
 
+// GetL2BlockByNumber queries the data stream by sending the L2 block start bookmark for the certain block number
+// and streams the changes for that block (including the transactions).
+// Note that this function is intended for on demand querying and it disposes the connection after it ends.
 func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, int, error) {
 	if _, err := c.EnsureConnected(); err != nil {
 		return nil, -1, err
@@ -140,6 +143,9 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 	return l2Block, types.CmdErrOK, nil
 }
 
+// GetLatestL2Block queries the data stream by reading the header entry and based on total entries field,
+// it retrieves the latest File entry that is of EntryTypeL2Block type.
+// Note that this function is intended for on demand querying and it disposes the connection after it ends.
 func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error) {
 	if _, err := c.EnsureConnected(); err != nil {
 		return nil, err

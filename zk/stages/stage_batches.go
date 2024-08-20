@@ -204,8 +204,8 @@ func SpawnStageBatches(
 		stageProgressBlockNo = highestDSL2Block.L2BlockNumber
 	}
 
-	log.Info(fmt.Sprintf("[%s] Highest block in datastream", logPrefix), "block", highestDSL2Block.L2BlockNumber)
-	log.Info(fmt.Sprintf("[%s] Highest block in db", logPrefix), "block", stageProgressBlockNo)
+	log.Debug(fmt.Sprintf("[%s] Highest block in datastream", logPrefix), "block", highestDSL2Block.L2BlockNumber)
+	log.Debug(fmt.Sprintf("[%s] Highest block in db", logPrefix), "block", stageProgressBlockNo)
 
 	dsClientProgress := cfg.dsClient.GetProgressAtomic()
 	dsClientProgress.Store(stageProgressBlockNo)
