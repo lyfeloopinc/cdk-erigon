@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+
 	libcommon "github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/chain"
@@ -153,6 +154,7 @@ func GetBatchLocalExitRootFromSCStorage(batchNo uint64, db DbReader, tx kv.Tx) (
 		}
 
 		stateReader := state.NewPlainState(tx, blockNo+1, systemcontracts.SystemContractCodeLookup["hermez"])
+		defer stateReader.Close()
 		rawLer, err := stateReader.ReadAccountStorage(state.GER_MANAGER_ADDRESS, 1, &state.GLOBAL_EXIT_ROOT_POS_1)
 		if err != nil {
 			return libcommon.Hash{}, err
