@@ -160,9 +160,11 @@ func sequencingStageStep(
 	// we consider the data stream as verified by the executor so treat it as "safe" and unwind blocks beyond there
 	// if we identify any.  During normal operation this function will simply check and move on without performing
 	// any action.
-	isUnwinding, err := handleBatchEndChecks(batchContext, batchState, executionAt, u)
-	if err != nil || isUnwinding {
-		return err
+	if !batchState.isAnyRecovery() {
+		isUnwinding, err := handleBatchEndChecks(batchContext, batchState, executionAt, u)
+		if err != nil || isUnwinding {
+			return err
+		}
 	}
 
 	tryHaltSequencer(batchContext, batchState.batchNumber)
@@ -313,7 +315,7 @@ func sequencingStageStep(
 				}
 
 				if len(batchState.blockState.transactionsForInclusion) == 0 {
-					time.Sleep(250 * time.Millisecond)
+					time.Sleep(batchContext.cfg.zk.SequencerTimeoutOnEmptyTxPool)
 				} else {
 					log.Trace(fmt.Sprintf("[%s] Yielded transactions from the pool", logPrefix), "txCount", len(batchState.blockState.transactionsForInclusion))
 				}
@@ -421,7 +423,7 @@ func sequencingStageStep(
 				if batchState.isL1Recovery() {
 					// just go into the normal loop waiting for new transactions to signal that the recovery
 					// has finished as far as it can go
-					if batchState.isThereAnyTransactionsToRecover() {
+					if !batchState.isThereAnyTransactionsToRecover() {
 						log.Info(fmt.Sprintf("[%s] L1 recovery no more transactions to recover", logPrefix))
 					}
 
@@ -435,8 +437,7 @@ func sequencingStageStep(
 			}
 		}
 
-		block, err = doFinishBlockAndUpdateState(batchContext, ibs, header, parentBlock, batchState, ger, l1BlockHash, l1TreeUpdateIndex, infoTreeIndexProgress, batchCounters)
-		if err != nil {
+		if block, err = doFinishBlockAndUpdateState(batchContext, ibs, header, parentBlock, batchState, ger, l1BlockHash, l1TreeUpdateIndex, infoTreeIndexProgress, batchCounters); err != nil {
 			return err
 		}
 
@@ -462,22 +463,30 @@ func sequencingStageStep(
 		// add a check to the verifier and also check for responses
 		batchState.onBuiltBlock(blockNumber)
 
-		// commit block data here so it is accessible in other threads
-		if errCommitAndStart := sdb.CommitAndStart(); errCommitAndStart != nil {
-			return errCommitAndStart
+		if !batchState.isL1Recovery() {
+			// commit block data here so it is accessible in other threads
+			if errCommitAndStart := sdb.CommitAndStart(); errCommitAndStart != nil {
+				return errCommitAndStart
+			}
+			defer sdb.tx.Rollback()
 		}
-		defer sdb.tx.Rollback()
 
-		cfg.legacyVerifier.StartAsyncVerification(batchState.forkId, batchState.batchNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), batchState.builtBlocks, batchState.hasExecutorForThisBatch, batchContext.cfg.zk.SequencerBatchVerificationTimeout)
+		// do not use remote executor in l1recovery mode
+		// if we need remote executor in l1 recovery then we must allow commit/start DB transactions
+		useExecutorForVerification := !batchState.isL1Recovery() && batchState.hasExecutorForThisBatch
+		cfg.legacyVerifier.StartAsyncVerification(batchState.forkId, batchState.batchNumber, block.Root(), batchCounters.CombineCollectorsNoChanges().UsedAsMap(), batchState.builtBlocks, useExecutorForVerification, batchContext.cfg.zk.SequencerBatchVerificationTimeout)
 
 		// check for new responses from the verifier
 		needsUnwind, err := updateStreamAndCheckRollback(batchContext, batchState, streamWriter, u)
 
-		// lets commit everything after updateStreamAndCheckRollback no matter of its result
-		if errCommitAndStart := sdb.CommitAndStart(); errCommitAndStart != nil {
-			return errCommitAndStart
+		// lets commit everything after updateStreamAndCheckRollback no matter of its result unless
+		// we're in L1 recovery where losing some blocks on restart doesn't matter
+		if !batchState.isL1Recovery() {
+			if errCommitAndStart := sdb.CommitAndStart(); errCommitAndStart != nil {
+				return errCommitAndStart
+			}
+			defer sdb.tx.Rollback()
 		}
-		defer sdb.tx.Rollback()
 
 		// check the return values of updateStreamAndCheckRollback
 		if err != nil || needsUnwind {
