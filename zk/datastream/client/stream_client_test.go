@@ -192,7 +192,7 @@ func Test_readFileEntry(t *testing.T) {
 				server.Close()
 			}()
 
-			result, err := c.readFileEntry()
+			result, err := c.NextFileEntry()
 			require.Equal(t, testCase.expectedError, err)
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})
@@ -249,7 +249,7 @@ func Test_readParsedProto(t *testing.T) {
 		close(errCh)
 	}()
 
-	parsedEntry, err := c.readParsedProto()
+	parsedEntry, err := ReadParsedProto(c)
 	require.NoError(t, err)
 	serverErr := <-errCh
 	require.NoError(t, serverErr)

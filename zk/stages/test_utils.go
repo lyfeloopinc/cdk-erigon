@@ -91,3 +91,7 @@ func (c *TestDatastreamClient) Start() error {
 func (c *TestDatastreamClient) Stop() {
 	c.isStarted = false
 }
+
+func (c *TestDatastreamClient) ReadBatches(start uint64, end uint64) ([][]*types.FullL2Block, error) {
+	return nil, nil
+}
