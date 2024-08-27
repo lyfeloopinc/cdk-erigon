@@ -304,7 +304,7 @@ LOOP:
 			c.conn.SetReadDeadline(time.Now().Add(c.checkTimeout))
 		}
 
-		parsedProto, localErr := types.ReadParsedProto(c)
+		parsedProto, localErr := ReadParsedProto(c)
 		if localErr != nil {
 			err = localErr
 			break
@@ -351,6 +351,93 @@ func (c *StreamClient) tryReConnect() error {
 	}
 
 	return err
+}
+
+type FileEntryIterator interface {
+	NextFileEntry() (*types.FileEntry, error)
+}
+
+func ReadParsedProto(iterator FileEntryIterator) (
+	parsedEntry interface{},
+	err error,
+) {
+	file, err := iterator.NextFileEntry()
+	if err != nil {
+		err = fmt.Errorf("read file entry error: %v", err)
+		return
+	}
+
+	switch file.EntryType {
+	case types.BookmarkEntryType:
+		parsedEntry, err = types.UnmarshalBookmark(file.Data)
+	case types.EntryTypeGerUpdate:
+		parsedEntry, err = types.DecodeGerUpdateProto(file.Data)
+	case types.EntryTypeBatchStart:
+		parsedEntry, err = types.UnmarshalBatchStart(file.Data)
+	case types.EntryTypeBatchEnd:
+		parsedEntry, err = types.UnmarshalBatchEnd(file.Data)
+	case types.EntryTypeL2Block:
+		var l2Block *types.FullL2Block
+		if l2Block, err = types.UnmarshalL2Block(file.Data); err != nil {
+			return
+		}
+
+		txs := []types.L2TransactionProto{}
+
+		var innerFile *types.FileEntry
+		var l2Tx *types.L2TransactionProto
+	LOOP:
+		for {
+			if innerFile, err = iterator.NextFileEntry(); err != nil {
+				return
+			}
+
+			if innerFile.IsL2Tx() {
+				if l2Tx, err = types.UnmarshalTx(innerFile.Data); err != nil {
+					return
+				}
+				txs = append(txs, *l2Tx)
+			} else if innerFile.IsL2BlockEnd() {
+				var l2BlockEnd *types.L2BlockEndProto
+				if l2BlockEnd, err = types.UnmarshalL2BlockEnd(innerFile.Data); err != nil {
+					return
+				}
+				if l2BlockEnd.GetBlockNumber() != l2Block.L2BlockNumber {
+					err = fmt.Errorf("block end number (%d) not equal to block number (%d)", l2BlockEnd.GetBlockNumber(), l2Block.L2BlockNumber)
+					return
+				}
+				break LOOP
+			} else if innerFile.IsBookmark() {
+				var bookmark *types.BookmarkProto
+				if bookmark, err = types.UnmarshalBookmark(innerFile.Data); err != nil || bookmark == nil {
+					return
+				}
+				if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK {
+					break LOOP
+				} else {
+					err = fmt.Errorf("unexpected bookmark type inside block: %v", bookmark.Type())
+					return
+				}
+			} else if innerFile.IsBatchEnd() {
+				if _, err = types.UnmarshalBatchEnd(file.Data); err != nil {
+					return
+				}
+				break LOOP
+			} else {
+				err = fmt.Errorf("unexpected entry type inside a block: %d", innerFile.EntryType)
+				return
+			}
+		}
+
+		l2Block.L2Txs = txs
+		parsedEntry = l2Block
+		return
+	case types.EntryTypeL2Tx:
+		err = fmt.Errorf("unexpected l2Tx out of block")
+	default:
+		err = fmt.Errorf("unexpected entry type: %d", file.EntryType)
+	}
+	return
 }
 
 // reads file bytes from socket and tries to parse them

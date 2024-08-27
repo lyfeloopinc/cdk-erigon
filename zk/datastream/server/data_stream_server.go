@@ -11,6 +11,7 @@ import (
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	eritypes "github.com/ledgerwatch/erigon/core/types"
+	"github.com/ledgerwatch/erigon/zk/datastream/client"
 	"github.com/ledgerwatch/erigon/zk/datastream/proto/github.com/0xPolygonHermez/zkevm-node/state/datastream"
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
 )
@@ -617,12 +618,12 @@ func (srv *DataStreamServer) ReadBatches(start uint64, end uint64) ([][]*types.F
 	return ReadBatches(iterator, start, end)
 }
 
-func ReadBatches(iterator types.FileEntryIterator, start uint64, end uint64) ([][]*types.FullL2Block, error) {
+func ReadBatches(iterator client.FileEntryIterator, start uint64, end uint64) ([][]*types.FullL2Block, error) {
 	batches := make([][]*types.FullL2Block, end-start+1)
 
 LOOP_ENTRIES:
 	for {
-		parsedProto, err := types.ReadParsedProto(iterator)
+		parsedProto, err := client.ReadParsedProto(iterator)
 		if err != nil {
 			return nil, err
 		}
