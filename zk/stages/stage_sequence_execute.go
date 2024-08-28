@@ -161,9 +161,12 @@ func sequencingStageStep(
 	// if we identify any.  During normal operation this function will simply check and move on without performing
 	// any action.
 	if !batchState.isAnyRecovery() {
-		isUnwinding, err := handleBatchEndChecks(batchContext, batchState, executionAt, u)
-		if err != nil || isUnwinding {
+		isUnwinding, err := alignExecutionToDatastream(batchContext, batchState, executionAt, u)
+		if err != nil {
 			return err
+		}
+		if isUnwinding {
+			return sdb.tx.Commit()
 		}
 	}
 
@@ -210,6 +213,7 @@ func sequencingStageStep(
 
 	log.Info(fmt.Sprintf("[%s] Starting batch %d...", logPrefix, batchState.batchNumber))
 
+	var allConditionsOK bool
 	for blockNumber := executionAt + 1; runLoopBlocks; blockNumber++ {
 		log.Info(fmt.Sprintf("[%s] Starting block %d (forkid %v)...", logPrefix, blockNumber, batchState.forkId))
 		logTicker.Reset(10 * time.Second)
@@ -303,9 +307,19 @@ func sequencingStageStep(
 						return err
 					}
 				} else if !batchState.isL1Recovery() && !batchState.isResequence() {
-					batchState.blockState.transactionsForInclusion, err = getNextPoolTransactions(ctx, cfg, executionAt, batchState.forkId, batchState.yieldedTransactions)
+					batchState.blockState.transactionsForInclusion, allConditionsOK, err = getNextPoolTransactions(ctx, cfg, executionAt, batchState.forkId, batchState.yieldedTransactions)
 					if err != nil {
 						return err
+					}
+
+					if len(batchState.blockState.transactionsForInclusion) == 0 {
+						if allConditionsOK {
+							time.Sleep(batchContext.cfg.zk.SequencerTimeoutOnEmptyTxPool)
+						} else {
+							time.Sleep(batchContext.cfg.zk.SequencerTimeoutOnEmptyTxPool / 5) // we do not need to sleep too long for txpool not ready
+						}
+					} else {
+						log.Trace(fmt.Sprintf("[%s] Yielded transactions from the pool", logPrefix), "txCount", len(batchState.blockState.transactionsForInclusion))
 					}
 				} else if batchState.isResequence() {
 					batchState.blockState.transactionsForInclusion, err = batchState.resequenceBatchJob.YieldNextBlockTransactions(zktx.DecodeTx)
@@ -500,9 +514,25 @@ func sequencingStageStep(
 		return err
 	}
 
-	if err = runBatchLastSteps(batchContext, batchState.batchNumber, block.NumberU64(), batchCounters); err != nil {
+	/*
+		if adding something below that line we must ensure
+		- it is also handled property in processInjectedInitialBatch
+		- it is also handled property in alignExecutionToDatastream
+		- it is also handled property in doCheckForBadBatch
+		- it is unwound correctly
+	*/
+
+	if err := finalizeLastBatchInDatastream(batchContext, batchState.batchNumber, block.NumberU64()); err != nil {
 		return err
 	}
+
+	// TODO: It is 99% sure that there is no need to write this in any of processInjectedInitialBatch, alignExecutionToDatastream, doCheckForBadBatch but it is worth double checknig
+	// the unwind of this value is handed by UnwindExecutionStageDbWrites
+	if _, err := rawdb.IncrementStateVersionByBlockNumberIfNeeded(batchContext.sdb.tx, block.NumberU64()); err != nil {
+		return fmt.Errorf("writing plain state version: %w", err)
+	}
+
+	log.Info(fmt.Sprintf("[%s] Finish batch %d...", batchContext.s.LogPrefix(), batchState.batchNumber))
 
 	return sdb.tx.Commit()
 }
