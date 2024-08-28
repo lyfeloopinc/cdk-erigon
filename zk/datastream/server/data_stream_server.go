@@ -572,16 +572,22 @@ func (srv *DataStreamServer) getLastEntryOfType(entryType datastreamer.EntryType
 type dataStreamServerIterator struct {
 	stream      *datastreamer.StreamServer
 	curEntryNum uint64
+	header      uint64
 }
 
 func newDataStreamServerIterator(stream *datastreamer.StreamServer, start uint64) *dataStreamServerIterator {
 	return &dataStreamServerIterator{
 		stream:      stream,
 		curEntryNum: start,
+		header:      stream.GetHeader().TotalEntries - 1,
 	}
 }
 
 func (it *dataStreamServerIterator) NextFileEntry() (entry *types.FileEntry, err error) {
+	if it.curEntryNum > it.header {
+		return nil, nil
+	}
+
 	var fileEntry datastreamer.FileEntry
 	fileEntry, err = it.stream.GetEntry(it.curEntryNum)
 	if err != nil {
@@ -625,6 +631,10 @@ LOOP_ENTRIES:
 		parsedProto, err := client.ReadParsedProto(iterator)
 		if err != nil {
 			return nil, err
+		}
+
+		if parsedProto == nil {
+			break
 		}
 
 		switch parsedProto := parsedProto.(type) {

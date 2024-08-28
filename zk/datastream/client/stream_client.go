@@ -488,6 +488,10 @@ func ReadParsedProto(iterator FileEntryIterator) (
 		return
 	}
 
+	if file == nil {
+		return nil, nil
+	}
+
 	switch file.EntryType {
 	case types.BookmarkEntryType:
 		parsedEntry, err = types.UnmarshalBookmark(file.Data)
