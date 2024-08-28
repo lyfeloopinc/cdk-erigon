@@ -235,6 +235,10 @@ func parseLogType(l1RollupId uint64, log *ethTypes.Log) (l1BatchInfo types.L1Bat
 		stateRoot, l1InfoRoot common.Hash
 	)
 
+	if l1RollupId != 1 && isRollupIdMatching == false {
+		return types.L1BatchInfo{}, logIncompatible
+	}
+
 	switch log.Topics[0] {
 	case contracts.SequencedBatchTopicPreEtrog:
 		batchLogType = logSequence
