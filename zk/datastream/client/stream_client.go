@@ -115,13 +115,21 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 
 	re, err := c.initiateDownloadBookmark(bookmarkRaw)
 	if err != nil {
-		return nil, int(re.ErrorNum), err
+		errorCode := -1
+		if re != nil {
+			errorCode = int(re.ErrorNum)
+		}
+		return nil, errorCode, err
 	}
 
 	for l2Block == nil {
 		select {
 		case <-c.ctx.Done():
-			return l2Block, int(re.ErrorNum), nil
+			errorCode := -1
+			if re != nil {
+				errorCode = int(re.ErrorNum)
+			}
+			return l2Block, errorCode, nil
 		default:
 		}
 
