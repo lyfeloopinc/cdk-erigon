@@ -359,6 +359,7 @@ LOOP:
 						cfg.dsClient.Stop()
 						return nil
 					}
+					continue
 				}
 
 				var dbParentBlockHash common.Hash
