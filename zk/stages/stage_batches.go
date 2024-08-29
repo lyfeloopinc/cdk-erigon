@@ -351,7 +351,7 @@ LOOP:
 
 					if entry.BatchNumber != dbBatchNum {
 						// if the bath number mismatches, it means that we need to trigger an unwinding of blocks
-						log.Info(fmt.Sprintf("[%s] Batch number mismatch detected. Triggering unwind...", logPrefix),
+						log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected. Triggering unwind...", logPrefix),
 							"block", entry.L2BlockNumber, "ds batch", entry.BatchNumber, "db batch", dbBatchNum)
 						if err := rollback(logPrefix, eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber, tx, u); err != nil {
 							return err
@@ -365,7 +365,8 @@ LOOP:
 				if entry.L2BlockNumber > 0 {
 					dbParentBlockHash, err = eriDb.ReadCanonicalHash(entry.L2BlockNumber - 1)
 					if err != nil {
-						return fmt.Errorf("failed to get genesis header: %v", err)
+						return fmt.Errorf("failed to retrieve parent block hash for datastream block %d: %w",
+							entry.L2BlockNumber, err)
 					}
 				}
 
@@ -383,7 +384,7 @@ LOOP:
 
 				if dbParentBlockHash != dsParentBlockHash {
 					// unwind/rollback blocks until the latest common ancestor block
-					log.Info(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, entry.L2BlockNumber),
+					log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, entry.L2BlockNumber),
 						"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
 					if err := rollback(logPrefix, eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber, tx, u); err != nil {
 						return err
