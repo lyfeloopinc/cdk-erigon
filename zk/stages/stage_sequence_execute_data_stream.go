@@ -87,7 +87,7 @@ func (sbc *SequencerBatchStreamWriter) writeBlockDetailsToDatastream(verifiedBun
 func alignExecutionToDatastream(batchContext *BatchContext, batchState *BatchState, lastExecutedBlock uint64, u stagedsync.Unwinder) (bool, error) {
 	lastExecutedBatch := batchState.batchNumber - 1
 
-	lastDatastreamBatch, err := batchContext.cfg.datastreamServer.GetHighestClosedBatch()
+	lastDatastreamBatch, err := batchContext.cfg.datastreamServer.GetHighestBatchNumber()
 	if err != nil {
 		return false, err
 	}
@@ -97,24 +97,22 @@ func alignExecutionToDatastream(batchContext *BatchContext, batchState *BatchSta
 		return false, err
 	}
 
-	if lastExecutedBatch != lastDatastreamBatch {
-		if err := finalizeLastBatchInDatastreamIfNotFinalized(batchContext, lastExecutedBatch, lastDatastreamBlock); err != nil {
-			return false, err
-		}
+	if lastExecutedBatch == lastDatastreamBatch && lastExecutedBlock == lastDatastreamBlock {
+		return false, nil
 	}
 
-	if lastExecutedBlock != lastDatastreamBlock {
-		block, err := rawdb.ReadBlockByNumber(batchContext.sdb.tx, lastDatastreamBlock)
-		if err != nil {
-			return false, err
-		}
-
-		log.Warn(fmt.Sprintf("[%s] Unwinding due to a datastream gap", batchContext.s.LogPrefix()), "streamHeight", lastDatastreamBlock, "sequencerHeight", lastExecutedBlock)
-		u.UnwindTo(lastDatastreamBlock, block.Hash())
-		return true, nil
+	if err := finalizeLastBatchInDatastreamIfNotFinalized(batchContext, lastDatastreamBatch, lastDatastreamBlock); err != nil {
+		return false, err
 	}
 
-	return false, nil
+	block, err := rawdb.ReadBlockByNumber(batchContext.sdb.tx, lastDatastreamBlock)
+	if err != nil {
+		return false, err
+	}
+
+	log.Warn(fmt.Sprintf("[%s] Unwinding due to a datastream gap", batchContext.s.LogPrefix()), "streamHeight", lastDatastreamBlock, "sequencerHeight", lastExecutedBlock)
+	u.UnwindTo(lastDatastreamBlock, block.Hash())
+	return true, nil
 }
 
 func finalizeLastBatchInDatastreamIfNotFinalized(batchContext *BatchContext, batchToClose, blockToCloseAt uint64) error {
