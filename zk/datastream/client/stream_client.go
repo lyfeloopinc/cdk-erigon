@@ -221,9 +221,9 @@ func (c *StreamClient) Stop() {
 	if c.conn == nil {
 		return
 	}
-	if err := c.sendStopCmd(); err != nil {
-		log.Warn(fmt.Sprintf("Failed to send the stop command to the data stream server: %s", err))
-	}
+	// if err := c.sendStopCmd(); err != nil {
+	// 	log.Warn(fmt.Sprintf("Failed to send the stop command to the data stream server: %s", err))
+	// }
 	c.conn.Close()
 	c.conn = nil
 
