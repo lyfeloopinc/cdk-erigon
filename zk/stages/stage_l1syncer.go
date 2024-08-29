@@ -133,6 +133,10 @@ Loop:
 				info, batchLogType := parseLogType(cfg.zkCfg.L1RollupId, &l)
 				switch batchLogType {
 				case logSequence:
+					// prevent storing pre-etrog sequences for etrog rollups
+					if batchLogType == logSequence && cfg.zkCfg.L1RollupId > 1 {
+						continue
+					}
 					if err := hermezDb.WriteSequence(info.L1BlockNo, info.BatchNo, info.L1TxHash, info.StateRoot); err != nil {
 						return fmt.Errorf("failed to write batch info, %w", err)
 					}
@@ -216,9 +220,10 @@ type BatchLogType byte
 var (
 	logUnknown          BatchLogType = 0
 	logSequence         BatchLogType = 1
-	logVerify           BatchLogType = 2
-	logVerifyEtrog      BatchLogType = 3
-	logL1InfoTreeUpdate BatchLogType = 4
+	logSequenceEtrog    BatchLogType = 2
+	logVerify           BatchLogType = 3
+	logVerifyEtrog      BatchLogType = 4
+	logL1InfoTreeUpdate BatchLogType = 5
 
 	logIncompatible BatchLogType = 100
 )
@@ -234,7 +239,7 @@ func parseLogType(l1RollupId uint64, log *ethTypes.Log) (l1BatchInfo types.L1Bat
 		batchLogType = logSequence
 		batchNum = new(big.Int).SetBytes(log.Topics[1].Bytes()).Uint64()
 	case contracts.SequencedBatchTopicEtrog:
-		batchLogType = logSequence
+		batchLogType = logSequenceEtrog
 		batchNum = new(big.Int).SetBytes(log.Topics[1].Bytes()).Uint64()
 		l1InfoRoot = common.BytesToHash(log.Data[:32])
 	case contracts.VerificationTopicPreEtrog:
