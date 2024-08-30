@@ -386,7 +386,7 @@ LOOP:
 				if dbParentBlockHash != dsParentBlockHash {
 					// unwind/rollback blocks until the latest common ancestor block
 					log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", logPrefix, entry.L2BlockNumber),
-						"db parent block hash", dbParentBlockHash, "ds parent block hash", lastHash)
+						"db parent block hash", dbParentBlockHash, "ds parent block hash", dsParentBlockHash)
 					if err := rollback(logPrefix, eriDb, hermezDb, dsQueryClient, entry.L2BlockNumber, tx, u); err != nil {
 						return err
 					}
