@@ -386,12 +386,6 @@ func TestStreamClientGetL2BlockByNumber(t *testing.T) {
 	c := NewClient(context.Background(), "", 0, 0, 0)
 	c.conn = clientConn
 
-	var (
-		errCh = make(chan error)
-		wg    sync.WaitGroup
-	)
-	wg.Add(1)
-
 	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
 	bookmarkRaw, err := bookmark.Marshal()
 	require.NoError(t, err)
@@ -401,22 +395,25 @@ func TestStreamClientGetL2BlockByNumber(t *testing.T) {
 	l2BlockRaw, err := l2BlockProto.Marshal()
 	require.NoError(t, err)
 
-	l2TxsRaw := make([][]byte, 0, len(l2Txs))
-	for _, l2Tx := range l2Txs {
+	l2TxsRaw := make([][]byte, len(l2Txs))
+	for i, l2Tx := range l2Txs {
 		l2TxProto := &types.TxProto{Transaction: l2Tx}
 		l2TxRaw, err := l2TxProto.Marshal()
 		require.NoError(t, err)
-
-		l2TxsRaw = append(l2TxsRaw, l2TxRaw)
+		l2TxsRaw[i] = l2TxRaw
 	}
 
 	l2BlockEnd := &types.L2BlockEndProto{Number: expectedL2Block.GetNumber()}
 	l2BlockEndRaw, err := l2BlockEnd.Marshal()
 	require.NoError(t, err)
 
-	// Prepare the server to send responses in a separate goroutine
-	go func() {
-		defer wg.Done()
+	errCh := make(chan error)
+
+	createServerResponses := func(t *testing.T, serverConn net.Conn, bookmarkRaw, l2BlockRaw []byte, l2TxsRaw [][]byte, l2BlockEndRaw []byte, errCh chan error) {
+		defer func() {
+			close(errCh)
+			serverConn.Close()
+		}()
 
 		// Read the command
 		if err := readAndValidateUint(t, serverConn, uint64(CmdStartBookmark), "command"); err != nil {
@@ -455,7 +452,7 @@ func TestStreamClientGetL2BlockByNumber(t *testing.T) {
 		}
 
 		// Write File entries (EntryTypeL2Block, EntryTypeL2Tx and EntryTypeL2BlockEnd)
-		fileEntries := make([]*types.FileEntry, 0, len(l2Txs))
+		fileEntries := make([]*types.FileEntry, 0, len(l2TxsRaw)+2)
 		fileEntries = append(fileEntries, createFileEntry(t, types.EntryTypeL2Block, 1, l2BlockRaw))
 		entryNum := uint64(2)
 		for _, l2TxRaw := range l2TxsRaw {
@@ -471,24 +468,21 @@ func TestStreamClientGetL2BlockByNumber(t *testing.T) {
 			}
 		}
 
-		serverConn.Close()
-	}()
+	}
 
-	go func() {
-		wg.Wait()
-		close(errCh)
-	}()
+	go createServerResponses(t, serverConn, bookmarkRaw, l2BlockRaw, l2TxsRaw, l2BlockEndRaw, errCh)
 
 	l2Block, errCode, err := c.GetL2BlockByNumber(blockNum)
 	require.NoError(t, err)
 	require.Equal(t, types.CmdErrOK, errCode)
+
 	serverErr := <-errCh
 	require.NoError(t, serverErr)
 
-	l2TxsProto := make([]types.L2TransactionProto, 0, len(l2Txs))
-	for _, tx := range l2Txs {
+	l2TxsProto := make([]types.L2TransactionProto, len(l2Txs))
+	for i, tx := range l2Txs {
 		l2TxProto := types.ConvertToL2TransactionProto(tx)
-		l2TxsProto = append(l2TxsProto, *l2TxProto)
+		l2TxsProto[i] = *l2TxProto
 	}
 	expectedFullL2Block := types.ConvertToFullL2Block(expectedL2Block)
 	expectedFullL2Block.L2Txs = l2TxsProto
