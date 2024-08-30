@@ -18,7 +18,11 @@ import (
 	"gotest.tools/v3/assert"
 )
 
-func Test_readHeaderEntry(t *testing.T) {
+const (
+	streamTypeFieldName = "stream type"
+)
+
+func TestStreamClientReadHeaderEntry(t *testing.T) {
 	type testCase struct {
 		name           string
 		input          []byte
@@ -66,7 +70,7 @@ func Test_readHeaderEntry(t *testing.T) {
 	}
 }
 
-func Test_readResultEntry(t *testing.T) {
+func TestStreamClientReadResultEntry(t *testing.T) {
 	type testCase struct {
 		name           string
 		input          []byte
@@ -130,7 +134,7 @@ func Test_readResultEntry(t *testing.T) {
 	}
 }
 
-func Test_readFileEntry(t *testing.T) {
+func TestStreamClientReadFileEntry(t *testing.T) {
 	type testCase struct {
 		name           string
 		input          []byte
@@ -199,7 +203,7 @@ func Test_readFileEntry(t *testing.T) {
 	}
 }
 
-func Test_readParsedProto(t *testing.T) {
+func TestStreamClientReadParsedProto(t *testing.T) {
 	c := NewClient(context.Background(), "", 0, 0, 0)
 	serverConn, clientConn := net.Pipe()
 	c.conn = clientConn
@@ -259,7 +263,7 @@ func Test_readParsedProto(t *testing.T) {
 	require.Equal(t, expectedL2Block, parsedEntry)
 }
 
-func TestStreamClient_GetLatestL2Block(t *testing.T) {
+func TestStreamClientGetLatestL2Block(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer func() {
 		serverConn.Close()
@@ -291,7 +295,7 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 		}
 
 		// Read the StreamType
-		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), "stream type"); err != nil {
+		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), streamTypeFieldName); err != nil {
 			errCh <- err
 			return
 		}
@@ -324,7 +328,7 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 		}
 
 		// Read the StreamType
-		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), "stream type"); err != nil {
+		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), streamTypeFieldName); err != nil {
 			errCh <- err
 			return
 		}
@@ -370,7 +374,7 @@ func TestStreamClient_GetLatestL2Block(t *testing.T) {
 	require.Equal(t, expectedFullL2Block, l2Block)
 }
 
-func TestStreamClient_GetL2BlockByNumber(t *testing.T) {
+func TestStreamClientGetL2BlockByNumber(t *testing.T) {
 	const blockNum = uint64(5)
 
 	serverConn, clientConn := net.Pipe()
@@ -421,7 +425,7 @@ func TestStreamClient_GetL2BlockByNumber(t *testing.T) {
 		}
 
 		// Read the stream type
-		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), "stream type"); err != nil {
+		if err := readAndValidateUint(t, serverConn, uint64(StSequencer), streamTypeFieldName); err != nil {
 			errCh <- err
 			return
 		}
