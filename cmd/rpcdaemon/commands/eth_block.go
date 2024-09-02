@@ -25,6 +25,7 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/adapter/ethapi"
 	"github.com/ledgerwatch/erigon/turbo/rpchelper"
 	"github.com/ledgerwatch/erigon/turbo/transactions"
+	"github.com/ledgerwatch/erigon/zk/hermez_db"
 )
 
 func (api *APIImpl) CallBundle_deprecated(ctx context.Context, txHashes []common.Hash, stateBlockNumberOrHash rpc.BlockNumberOrHash, timeoutMilliSecondsPtr *int64) (map[string]interface{}, error) {
@@ -197,7 +198,7 @@ func (api *APIImpl) CallBundle_deprecated(ctx context.Context, txHashes []common
 }
 
 // GetBlockByNumber implements eth_getBlockByNumber. Returns information about a block given the block's number.
-func (api *APIImpl) GetBlockByNumber(ctx context.Context, number rpc.BlockNumber, fullTx bool) (map[string]interface{}, error) {
+func (api *APIImpl) GetBlockByNumber(ctx context.Context, number rpc.BlockNumber, fullTx bool, zkExtras *bool) (map[string]interface{}, error) {
 	tx, err := api.db.BeginRo(ctx)
 	if err != nil {
 		return nil, err
@@ -237,12 +238,6 @@ func (api *APIImpl) GetBlockByNumber(ctx context.Context, number rpc.BlockNumber
 	}
 	var borTx types.Transaction
 	var borTxHash common.Hash
-	//if chainConfig.Bor != nil {
-	//	borTx, _, _, _ = rawdb.ReadBorTransactionForBlock(tx, b)
-	//	if borTx != nil {
-	//		borTxHash = types.ComputeBorTxHash(b.NumberU64(), b.Hash())
-	//	}
-	//}
 
 	response, err := ethapi.RPCMarshalBlockEx(b, true, fullTx, borTx, borTxHash, additionalFields)
 	if err == nil && number == rpc.PendingBlockNumber {
@@ -251,11 +246,18 @@ func (api *APIImpl) GetBlockByNumber(ctx context.Context, number rpc.BlockNumber
 			response[field] = nil
 		}
 	}
+
+	if zkExtras != nil && *zkExtras {
+		if err = addZkExtras(tx, b.NumberU64(), response); err != nil {
+			return nil, err
+		}
+	}
+
 	return response, err
 }
 
 // GetBlockByHash implements eth_getBlockByHash. Returns information about a block given the block's hash.
-func (api *APIImpl) GetBlockByHash(ctx context.Context, numberOrHash rpc.BlockNumberOrHash, fullTx bool) (map[string]interface{}, error) {
+func (api *APIImpl) GetBlockByHash(ctx context.Context, numberOrHash rpc.BlockNumberOrHash, fullTx bool, zkExtras *bool) (map[string]interface{}, error) {
 	if numberOrHash.BlockHash == nil {
 		// some web3.js based apps (like ethstats client) for some reason call
 		// eth_getBlockByHash with a block number as a parameter
@@ -263,7 +265,7 @@ func (api *APIImpl) GetBlockByHash(ctx context.Context, numberOrHash rpc.BlockNu
 		if numberOrHash.BlockNumber == nil {
 			return nil, nil // not error, see https://github.com/ledgerwatch/erigon/issues/1645
 		}
-		return api.GetBlockByNumber(ctx, *numberOrHash.BlockNumber, fullTx)
+		return api.GetBlockByNumber(ctx, *numberOrHash.BlockNumber, fullTx, zkExtras)
 	}
 
 	hash := *numberOrHash.BlockHash
@@ -315,7 +317,33 @@ func (api *APIImpl) GetBlockByHash(ctx context.Context, numberOrHash rpc.BlockNu
 			response[field] = nil
 		}
 	}
+
+	if zkExtras != nil && *zkExtras {
+		if err = addZkExtras(tx, block.NumberU64(), response); err != nil {
+			return nil, err
+		}
+	}
+
 	return response, err
+}
+
+func addZkExtras(tx kv.Tx, blockNum uint64, response map[string]interface{}) error {
+	// load in the global exit root and block info root
+	hermezDb := hermez_db.NewHermezDbReader(tx)
+	ger, err := hermezDb.GetBlockGlobalExitRoot(blockNum)
+	if err != nil {
+		return err
+	}
+
+	blockRoot, err := hermezDb.GetBlockInfoRoot(blockNum)
+	if err != nil {
+		return err
+	}
+
+	response["globalExitRoot"] = ger.String()
+	response["blockInfoRoot"] = blockRoot.String()
+
+	return nil
 }
 
 // GetBlockTransactionCountByNumber implements eth_getBlockTransactionCountByNumber. Returns the number of transactions in a block given the block's block number.
