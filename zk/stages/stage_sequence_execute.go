@@ -131,10 +131,15 @@ func sequencingStageStep(
 		return nil
 	}
 
+	batchNumberForStateInitialization, err := prepareBatchNumber(sdb, forkId, lastBatch, cfg.zk.L1SyncStartBlock > 0)
+	if err != nil {
+		return err
+	}
+
 	var block *types.Block
 	runLoopBlocks := true
 	batchContext := newBatchContext(ctx, &cfg, &historyCfg, s, sdb)
-	batchState := newBatchState(forkId, lastBatch+1, cfg.zk.HasExecutors(), cfg.zk.L1SyncStartBlock > 0, cfg.txPool, resequenceBatchJob)
+	batchState := newBatchState(forkId, batchNumberForStateInitialization, cfg.zk.HasExecutors(), cfg.zk.L1SyncStartBlock > 0, cfg.txPool, resequenceBatchJob)
 	blockDataSizeChecker := newBlockDataChecker()
 	streamWriter := newSequencerBatchStreamWriter(batchContext, batchState, lastBatch) // using lastBatch (rather than batchState.batchNumber) is not mistake
 
@@ -226,6 +231,7 @@ func sequencingStageStep(
 
 			didLoadedAnyDataForRecovery := batchState.loadBlockL1RecoveryData(uint64(len(blockNumbersInBatchSoFar)))
 			if !didLoadedAnyDataForRecovery {
+				log.Info(fmt.Sprintf("[%s] Block %d is not part of batch %d. Stopping blocks loop", logPrefix, blockNumber, batchState.batchNumber))
 				break
 			}
 		}
@@ -388,7 +394,7 @@ func sequencingStageStep(
 							*/
 							if !batchState.hasAnyTransactionsInThisBatch {
 								cfg.txPool.MarkForDiscardFromPendingBest(txHash)
-								log.Trace(fmt.Sprintf("single transaction %s overflow counters", txHash))
+								log.Info(fmt.Sprintf("single transaction %s overflow counters", txHash))
 							}
 
 							runLoopBlocks = false
