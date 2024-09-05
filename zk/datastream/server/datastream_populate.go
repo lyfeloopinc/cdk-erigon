@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -107,12 +108,12 @@ func (srv *DataStreamServer) WriteBlocksToStreamConsecutively(
 	//////////
 
 	latestbatchNum, err := reader.GetBatchNoByL2Block(from - 1)
-	if err != nil {
+	if err != nil && !errors.Is(err, hermez_db.ErrorNotStored) {
 		return err
 	}
 
 	batchNum, err := reader.GetBatchNoByL2Block(from)
-	if err != nil {
+	if err != nil && !errors.Is(err, hermez_db.ErrorNotStored) {
 		return err
 	}
 
@@ -160,7 +161,7 @@ LOOP:
 		}
 
 		batchNum, err := reader.GetBatchNoByL2Block(currentBlockNumber)
-		if err != nil {
+		if err != nil && !errors.Is(err, hermez_db.ErrorNotStored) {
 			return err
 		}
 
@@ -250,14 +251,7 @@ func (srv *DataStreamServer) WriteBlockWithBatchStartToStream(
 		}
 	}
 
-	l1InfoTreeMinTimestamps := make(map[uint64]uint64)
-	deltaTimestamp := block.Time() - prevBlock.Time()
-	if blockNum == 1 {
-		deltaTimestamp = block.Time()
-		l1InfoTreeMinTimestamps[0] = 0
-	}
-
-	blockEntries, err := createFullBlockStreamEntriesProto(reader, tx, &block, block.Transactions(), forkId, deltaTimestamp, batchNum, make(map[uint64]uint64))
+	blockEntries, err := createFullBlockStreamEntriesProto(reader, tx, &block, &prevBlock, block.Transactions(), forkId, batchNum, make(map[uint64]uint64))
 	if err != nil {
 		return err
 	}
@@ -297,7 +291,7 @@ func (srv *DataStreamServer) UnwindIfNecessary(logPrefix string, reader DbReader
 			log.Warn(fmt.Sprintf("[%s] Datastream must unwind to batch", logPrefix), "prevBlockBatchNum", prevBlockBatchNum, "batchNum", batchNum)
 
 			//get latest block in prev batch
-			lastBlockInPrevbatch, err := reader.GetHighestBlockInBatch(prevBlockBatchNum)
+			lastBlockInPrevbatch, _, err := reader.GetHighestBlockInBatch(prevBlockBatchNum)
 			if err != nil {
 				return err
 			}
@@ -365,7 +359,7 @@ func (srv *DataStreamServer) WriteGenesisToStream(
 	tx kv.Tx,
 ) error {
 	batchNo, err := reader.GetBatchNoByL2Block(0)
-	if err != nil {
+	if err != nil && !errors.Is(err, hermez_db.ErrorNotStored) {
 		return err
 	}
 
