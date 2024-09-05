@@ -1044,7 +1044,7 @@ func getUnwindPoint(eriDb erigon_db.ReadOnlyErigonDb, hermezDb state.ReadOnlyHer
 			fmt.Errorf("failed to find batch number for the block %d (%s)", blockNum, blockHash)
 	}
 
-	unwindBlockNum, err := hermezDb.GetHighestBlockInBatch(batchNum - 1)
+	unwindBlockNum, _, err := hermezDb.GetHighestBlockInBatch(batchNum - 1)
 	if err != nil {
 		return 0, emptyHash, 0, err
 	}
