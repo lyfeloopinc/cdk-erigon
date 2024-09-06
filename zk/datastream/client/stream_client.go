@@ -358,20 +358,32 @@ func (c *StreamClient) ReadAllEntriesToChannel() error {
 		return err
 	}
 
-	if err := c.readAllFullL2BlocksToChannel(); err != nil {
-		err2 := fmt.Errorf("%s read full L2 blocks error: %v", c.id, err)
+	errChan := make(chan error, 1)
 
+	go func() {
+		errChan <- c.readAllFullL2BlocksToChannel()
+	}()
+
+	select {
+	case <-c.ctx.Done():
 		if c.conn != nil {
-			if err2 := c.conn.Close(); err2 != nil {
-				log.Error("failed to close connection after error", "original-error", err, "new-error", err2)
+			if closeErr := c.conn.Close(); closeErr != nil {
+				log.Error("failed to close connection after context cancellation", "error", closeErr)
 			}
 			c.conn = nil
 		}
-
-		// reset the channels as there could be data ahead of the bookmark we want to track here.
-		// c.resetChannels()
-
-		return err2
+		return c.ctx.Err()
+	case err := <-errChan:
+		if err != nil {
+			err2 := fmt.Errorf("%s read full L2 blocks error: %w", c.id, err)
+			if c.conn != nil {
+				if closeErr := c.conn.Close(); closeErr != nil {
+					log.Error("failed to close connection after error", "original-error", err, "new-error", closeErr)
+				}
+				c.conn = nil
+			}
+			return err2
+		}
 	}
 
 	return nil
