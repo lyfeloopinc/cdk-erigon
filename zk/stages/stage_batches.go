@@ -108,7 +108,9 @@ func SpawnStageBatches(
 		log.Info(fmt.Sprintf("[%s] skipping -- sequencer", logPrefix))
 		return nil
 	}
-	defer log.Info(fmt.Sprintf("[%s] Finished Batches stage", logPrefix))
+	defer func() {
+		log.Info(fmt.Sprintf("[%s] Finished Batches stage", logPrefix))
+	}()
 
 	freshTx := false
 	if tx == nil {
@@ -157,25 +159,38 @@ func SpawnStageBatches(
 		// Create bookmark
 
 		connected := false
-		for i := 0; i < 5; i++ {
-			connected, err = cfg.dsClient.EnsureConnected()
-			if err != nil {
-				log.Error("[datastream_client] Error connecting to datastream", "error", err)
-				continue
-			}
-			if connected {
-				break
-			}
-		}
 
 		go func() {
 			log.Info(fmt.Sprintf("[%s] Started downloading L2Blocks routine", logPrefix))
 			defer log.Info(fmt.Sprintf("[%s] Finished downloading L2Blocks routine", logPrefix))
 
-			if connected {
+			retryAttempts := 0
+			maxRetryAttempts := 5
+
+			for {
+				if !connected {
+					connected, err = cfg.dsClient.EnsureConnected()
+					if err != nil || !connected {
+						log.Error("[datastream_client] Error connecting to datastream", "error", err)
+						retryAttempts++
+						if retryAttempts >= maxRetryAttempts {
+							log.Error("[datastream_client] Max retry attempts reached, exiting")
+							break
+						}
+						time.Sleep(5 * time.Second)
+						continue
+					}
+					retryAttempts = 0
+					log.Info(fmt.Sprintf("[%s] Reconnected to datastream", logPrefix))
+				}
+
 				if err := cfg.dsClient.ReadAllEntriesToChannel(); err != nil {
 					log.Error("[datastream_client] Error downloading blocks from datastream", "error", err)
+					connected = false
+					continue
 				}
+
+				break
 			}
 		}()
 	}
@@ -295,19 +310,16 @@ LOOP:
 					continue
 				}
 
-				// skip if we already have this block
-				if entry.L2BlockNumber < lastBlockHeight+1 {
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, entry.L2BlockNumber))
-					badBlock, err := eriDb.ReadCanonicalHash(entry.L2BlockNumber)
-					if err != nil {
-						return fmt.Errorf("failed to get bad block: %v", err)
-					}
-					u.UnwindTo(entry.L2BlockNumber, badBlock)
+				// if we have already seen the block just log and continue
+				if entry.L2BlockNumber <= lastBlockHeight {
+					log.Warn(fmt.Sprintf("[%s] Skipping block %d, already processed", logPrefix, entry.L2BlockNumber))
+					continue
 				}
 
-				// check for sequential block numbers
-				if entry.L2BlockNumber != lastBlockHeight+1 {
-					return fmt.Errorf("block number is not sequential, expected %d, got %d", lastBlockHeight+1, entry.L2BlockNumber)
+				// if it's above our height in more than a 1 increment, we have a big problem
+				if entry.L2BlockNumber > lastBlockHeight+1 {
+					log.Warn("STREAM HAS SKIPPED!!!!", "lastBlockHeight", lastBlockHeight, "entry.L2BlockNumber", entry.L2BlockNumber)
+					panic("stream gap detected")
 				}
 
 				// batch boundary - record the highest hashable block number (last block in last full batch)
