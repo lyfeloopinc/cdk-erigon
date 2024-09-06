@@ -166,7 +166,7 @@ func SpawnStageBatches(
 
 	// get batch for batches progress
 	stageProgressBatchNo, err := hermezDb.GetBatchNoByL2Block(stageProgressBlockNo)
-	if err != nil {
+	if err != nil && !errors.Is(err, hermez_db.ErrorNotStored) {
 		return fmt.Errorf("get batch no by l2 block error: %v", err)
 	}
 
@@ -303,6 +303,10 @@ LOOP:
 			case *types.BatchEnd:
 				if entry.StateRoot != lastBlockRoot {
 					log.Warn(fmt.Sprintf("[%s] batch end state root mismatches last block's: %x, expected: %x", logPrefix, entry.StateRoot, lastBlockRoot))
+				}
+				// keep a record of the last block processed when we receive the batch end
+				if err = hermezDb.WriteBatchEnd(lastBlockHeight); err != nil {
+					return err
 				}
 			case *types.FullL2Block:
 				log.Debug(fmt.Sprintf("[%s] Retrieved %d (%s) block from stream", logPrefix, entry.L2BlockNumber, entry.L2Blockhash.String()))
@@ -627,15 +631,15 @@ func UnwindBatchesStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg BatchesCfg, c
 	}
 
 	fromBatchPrev, err := hermezDb.GetBatchNoByL2Block(fromBlock - 1)
-	if err != nil {
+	if err != nil && !errors.Is(err, hermez_db.ErrorNotStored) {
 		return fmt.Errorf("get batch no by l2 block error: %v", err)
 	}
 	fromBatch, err := hermezDb.GetBatchNoByL2Block(fromBlock)
-	if err != nil {
+	if err != nil && !errors.Is(err, hermez_db.ErrorNotStored) {
 		return fmt.Errorf("get fromBatch no by l2 block error: %v", err)
 	}
 	toBatch, err := hermezDb.GetBatchNoByL2Block(toBlock)
-	if err != nil {
+	if err != nil && !errors.Is(err, hermez_db.ErrorNotStored) {
 		return fmt.Errorf("get toBatch no by l2 block error: %v", err)
 	}
 
@@ -710,6 +714,10 @@ func UnwindBatchesStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg BatchesCfg, c
 	if err = hermezDb.DeleteReusedL1InfoTreeIndexes(fromBlock, toBlock); err != nil {
 		return fmt.Errorf("write reused l1 info tree index error: %w", err)
 	}
+
+	if err = hermezDb.DeleteBatchEnds(fromBlock, toBlock); err != nil {
+		return fmt.Errorf("delete batch ends error: %v", err)
+	}
 	///////////////////////////////////////////////////////
 
 	log.Info(fmt.Sprintf("[%s] Deleted headers, bodies, forkIds and blockBatches.", logPrefix))
@@ -729,7 +737,7 @@ func UnwindBatchesStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg BatchesCfg, c
 	/////////////////////////////////////////////
 	// iterate until a block with lower batch number is found
 	// this is the last block of the previous batch and the highest hashable block for verifications
-	lastBatchHighestBlock, err := hermezDb.GetHighestBlockInBatch(fromBatchPrev - 1)
+	lastBatchHighestBlock, _, err := hermezDb.GetHighestBlockInBatch(fromBatchPrev - 1)
 	if err != nil {
 		return fmt.Errorf("get batch highest block error: %w", err)
 	}
