@@ -130,6 +130,7 @@ func NewLegacyExecutorVerifier(
 }
 
 func (v *LegacyExecutorVerifier) StartAsyncVerification(
+	logPrefix string,
 	forkId uint64,
 	batchNumber uint64,
 	stateRoot common.Hash,
@@ -147,13 +148,15 @@ func (v *LegacyExecutorVerifier) StartAsyncVerification(
 		promise = v.VerifyWithoutExecutor(request, blockNumbers)
 	}
 
-	v.appendPromise(promise)
+	size := v.appendPromise(promise)
+	log.Info(fmt.Sprintf("[%s] Starting verification request", logPrefix), "batch-number", batchNumber, "blocks-range", fmt.Sprintf("[%d;%d]", request.GetFirstBlockNumber(), request.GetLastBlockNumber()), "pending-requests", size)
 }
 
-func (v *LegacyExecutorVerifier) appendPromise(promise *Promise[*VerifierBundle]) {
+func (v *LegacyExecutorVerifier) appendPromise(promise *Promise[*VerifierBundle]) int {
 	v.mtxPromises.Lock()
 	defer v.mtxPromises.Unlock()
 	v.promises = append(v.promises, promise)
+	return len(v.promises)
 }
 
 func (v *LegacyExecutorVerifier) VerifySync(tx kv.Tx, request *VerifierRequest, witness, streamBytes []byte, timestampLimit uint64, l1InfoTreeMinTimestamps map[uint64]uint64) error {
@@ -313,7 +316,7 @@ func (v *LegacyExecutorVerifier) VerifyWithoutExecutor(request *VerifierRequest,
 	return promise
 }
 
-func (v *LegacyExecutorVerifier) ProcessResultsSequentially() ([]*VerifierBundle, error) {
+func (v *LegacyExecutorVerifier) ProcessResultsSequentially(logPrefix string) ([]*VerifierBundle, error) {
 	v.mtxPromises.Lock()
 	defer v.mtxPromises.Unlock()
 
@@ -349,6 +352,7 @@ func (v *LegacyExecutorVerifier) ProcessResultsSequentially() ([]*VerifierBundle
 			break
 		}
 
+		log.Info(fmt.Sprintf("[%s] Finished verification request", logPrefix), "batch-number", verifierBundle.Request.BatchNumber, "blocks-range", fmt.Sprintf("[%d;%d]", verifierBundle.Request.GetFirstBlockNumber(), verifierBundle.Request.GetLastBlockNumber()), "is-valid", verifierBundle.Response.Valid, "pending-requests", len(v.promises)-1-idx)
 		verifierResponse = append(verifierResponse, verifierBundle)
 	}
 
