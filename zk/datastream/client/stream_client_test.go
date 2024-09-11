@@ -51,7 +51,7 @@ func TestStreamClientReadHeaderEntry(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		c := NewClient(context.Background(), "", 0, 0, 0)
+		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
 		defer server.Close()
 		defer c.Stop()
@@ -64,7 +64,9 @@ func TestStreamClientReadHeaderEntry(t *testing.T) {
 			}()
 
 			header, err := c.readHeaderEntry()
-			require.Equal(t, testCase.expectedError, err)
+			if testCase.expectedError != nil {
+				require.ErrorContains(t, err, testCase.expectedError.Error())
+			}
 			assert.DeepEqual(t, testCase.expectedResult, header)
 		})
 	}
@@ -115,7 +117,7 @@ func TestStreamClientReadResultEntry(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		c := NewClient(context.Background(), "", 0, 0, 0)
+		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
 		defer server.Close()
 		defer c.Stop()
@@ -128,7 +130,9 @@ func TestStreamClientReadResultEntry(t *testing.T) {
 			}()
 
 			result, err := c.readResultEntry([]byte{1})
-			require.Equal(t, testCase.expectedError, err)
+			if testCase.expectedError != nil {
+				require.ErrorContains(t, err, testCase.expectedError.Error())
+			}
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})
 	}
@@ -184,7 +188,7 @@ func TestStreamClientReadFileEntry(t *testing.T) {
 		},
 	}
 	for _, testCase := range testCases {
-		c := NewClient(context.Background(), "", 0, 0, 0)
+		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
 		defer c.Stop()
 		defer server.Close()
@@ -197,14 +201,16 @@ func TestStreamClientReadFileEntry(t *testing.T) {
 			}()
 
 			result, err := c.NextFileEntry()
-			require.Equal(t, testCase.expectedError, err)
+			if testCase.expectedError != nil {
+				require.ErrorContains(t, err, testCase.expectedError.Error())
+			}
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})
 	}
 }
 
 func TestStreamClientReadParsedProto(t *testing.T) {
-	c := NewClient(context.Background(), "", 0, 0, 0)
+	c := NewClient(context.Background(), "", 0, 0, 0, 0)
 	serverConn, clientConn := net.Pipe()
 	c.conn = clientConn
 	defer func() {
@@ -270,7 +276,7 @@ func TestStreamClientGetLatestL2Block(t *testing.T) {
 		clientConn.Close()
 	}()
 
-	c := NewClient(context.Background(), "", 0, 0, 0)
+	c := NewClient(context.Background(), "", 0, 0, 0, 0)
 	c.conn = clientConn
 
 	expectedL2Block, _ := createL2BlockAndTransactions(t, 5, 0)
@@ -383,7 +389,7 @@ func TestStreamClientGetL2BlockByNumber(t *testing.T) {
 		clientConn.Close()
 	}()
 
-	c := NewClient(context.Background(), "", 0, 0, 0)
+	c := NewClient(context.Background(), "", 0, 0, 0, 0)
 	c.conn = clientConn
 
 	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)

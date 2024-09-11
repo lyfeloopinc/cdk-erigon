@@ -962,10 +962,11 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 			*/
 			latestForkId, err := stages.GetStageProgress(tx, stages.ForkId)
+			highestDownloadedBlock, err := stages.GetStageProgress(tx, stages.Batches)
 			if err != nil {
 				return nil, err
 			}
-			streamClient := initDataStreamClient(ctx, cfg.Zk, uint16(latestForkId))
+			streamClient := initDataStreamClient(ctx, cfg.Zk, uint16(latestForkId), highestDownloadedBlock)
 
 			backend.syncStages = stages2.NewDefaultZkStages(
 				backend.sentryCtx,
@@ -1050,9 +1051,10 @@ func newEtherMan(cfg *ethconfig.Config, l2ChainName, url string) *etherman.Clien
 	return em
 }
 
-// creates a datastream client with default parameters
-func initDataStreamClient(ctx context.Context, cfg *ethconfig.Zk, latestForkId uint16) *client.StreamClient {
-	return client.NewClient(ctx, cfg.L2DataStreamerUrl, cfg.DatastreamVersion, cfg.L2DataStreamerTimeout, latestForkId)
+func initDataStreamClient(ctx context.Context, cfg *ethconfig.Zk, latestForkId uint16, highestDowloadedBlock uint64) *client.StreamClient {
+	c := client.NewClient(ctx, cfg.L2DataStreamerUrl, cfg.DatastreamVersion, cfg.L2DataStreamerTimeout, latestForkId, highestDowloadedBlock)
+	go c.StartStreaming() // fires off goroutine to download from the stream!
+	return c
 }
 
 func (backend *Ethereum) Init(stack *node.Node, config *ethconfig.Config) error {

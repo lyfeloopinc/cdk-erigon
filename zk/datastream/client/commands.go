@@ -15,7 +15,7 @@ const (
 
 // sendHeaderCmd sends the header command to the server.
 func (c *StreamClient) sendHeaderCmd() error {
-	err := c.sendCommand(CmdHeader)
+	err := c.sendCommandAndStreamType(CmdHeader)
 	if err != nil {
 		return fmt.Errorf("%s %v", c.id, err)
 	}
@@ -33,7 +33,7 @@ func (c *StreamClient) sendBookmarkCmd(bookmark []byte, streaming bool) error {
 	}
 
 	// Send the command
-	if err := c.sendCommand(command); err != nil {
+	if err := c.sendCommandAndStreamType(command); err != nil {
 		return err
 	}
 
@@ -46,10 +46,26 @@ func (c *StreamClient) sendBookmarkCmd(bookmark []byte, streaming bool) error {
 	return writeBytesToConn(c.conn, bookmark)
 }
 
+// sendEntryCommand sends an entry command to the server, indicating
+// that the client wishes to stream the given entry number.
+func (c *StreamClient) sendEntryCommand(entryNum uint64) error {
+	err := c.sendCommandAndStreamType(CmdEntry)
+	if err != nil {
+		return err
+	}
+
+	// Send entry number
+	if err := writeFullUint64ToConn(c.conn, entryNum); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // sendStartCmd sends a start command to the server, indicating
 // that the client wishes to start streaming from the given entry number.
 func (c *StreamClient) sendStartCmd(from uint64) error {
-	err := c.sendCommand(CmdStart)
+	err := c.sendCommandAndStreamType(CmdStart)
 	if err != nil {
 		return err
 	}
@@ -61,7 +77,7 @@ func (c *StreamClient) sendStartCmd(from uint64) error {
 // sendEntryCmd sends the get data stream entry by number command to a TCP connection
 func (c *StreamClient) sendEntryCmd(entryNum uint64) error {
 	// Send CmdEntry command
-	if err := c.sendCommand(CmdEntry); err != nil {
+	if err := c.sendCommandAndStreamType(CmdEntry); err != nil {
 		return err
 	}
 
@@ -71,7 +87,7 @@ func (c *StreamClient) sendEntryCmd(entryNum uint64) error {
 
 // sendHeaderCmd sends the header command to the server.
 func (c *StreamClient) sendStopCmd() error {
-	err := c.sendCommand(CmdStop)
+	err := c.sendCommandAndStreamType(CmdStop)
 	if err != nil {
 		return fmt.Errorf("%s %v", c.id, err)
 	}
@@ -79,7 +95,7 @@ func (c *StreamClient) sendStopCmd() error {
 	return nil
 }
 
-func (c *StreamClient) sendCommand(cmd Command) error {
+func (c *StreamClient) sendCommandAndStreamType(cmd Command) error {
 	// Send command
 	if err := writeFullUint64ToConn(c.conn, uint64(cmd)); err != nil {
 		return fmt.Errorf("%s %v", c.id, err)

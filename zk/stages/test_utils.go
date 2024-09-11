@@ -3,6 +3,8 @@ package stages
 import (
 	"sync/atomic"
 
+	"github.com/ledgerwatch/erigon/zk/datastream/client"
+	"github.com/ledgerwatch/erigon/zk/datastream/slice_manager"
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
 )
 
@@ -15,6 +17,16 @@ type TestDatastreamClient struct {
 	entriesChan           chan interface{}
 	errChan               chan error
 	isStarted             bool
+}
+
+func (c *TestDatastreamClient) GetStatus() client.Status {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (c *TestDatastreamClient) UpdateProgress(u uint64) {
+	//TODO implement me
+	panic("implement me")
 }
 
 func NewTestDatastreamClient(fullL2Blocks []types.FullL2Block, gerUpdates []types.GerUpdate) *TestDatastreamClient {
@@ -94,4 +106,8 @@ func (c *TestDatastreamClient) Start() error {
 
 func (c *TestDatastreamClient) Stop() {
 	c.isStarted = false
+}
+
+func (c *TestDatastreamClient) GetSliceManager() *slice_manager.SliceManager {
+	return nil
 }
