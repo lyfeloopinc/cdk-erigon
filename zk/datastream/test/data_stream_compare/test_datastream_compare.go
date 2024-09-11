@@ -25,20 +25,11 @@ func main() {
 	flag.StringVar(&stream2, "stream2", "", "the second stream to pull data from")
 	flag.Parse()
 
-	client1 := client.NewClient(ctx, stream1, 0, 0, 0)
-	client2 := client.NewClient(ctx, stream2, 0, 0, 0)
+	client1 := client.NewClient(ctx, stream1, 0, 0, 0, 0)
+	client2 := client.NewClient(ctx, stream2, 0, 0, 0, 0)
 
-	err := client1.Start()
-	if err != nil {
-		fmt.Printf("error: %s\n", err)
-		return
-	}
-
-	err = client2.Start()
-	if err != nil {
-		fmt.Printf("error: %s\n", err)
-		return
-	}
+	client1.Start()
+	client2.Start()
 
 	client1.GetProgressAtomic().Store(0)
 
@@ -69,7 +60,7 @@ func main() {
 
 func readFromClient(client *client.StreamClient, total int) ([]interface{}, error) {
 	go func() {
-		err := client.ReadAllEntriesToChannel()
+		err := client.ReadAllEntries()
 		if err != nil {
 			fmt.Printf("error: %v", err)
 			return
@@ -79,10 +70,9 @@ func readFromClient(client *client.StreamClient, total int) ([]interface{}, erro
 	data := make([]interface{}, 0)
 	count := 0
 
-LOOP:
-	for {
-		entry := <-client.GetEntryChan()
+	entries := client.GetSliceManager().ConsumeCurrentItems()
 
+	for _, entry := range entries {
 		switch entry.(type) {
 		case types.FullL2Block:
 		case types.GerUpdate:
@@ -92,9 +82,8 @@ LOOP:
 		}
 
 		if count == total {
-			break LOOP
+			break
 		}
-
 	}
 
 	return data, nil

@@ -4,6 +4,8 @@ import (
 	"sync/atomic"
 
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
+	"github.com/ledgerwatch/erigon/zk/datastream/slice_manager"
+	"github.com/ledgerwatch/erigon/zk/datastream/client"
 )
 
 type TestDatastreamClient struct {
@@ -14,6 +16,16 @@ type TestDatastreamClient struct {
 	progress              atomic.Uint64
 	entriesChan           chan interface{}
 	errChan               chan error
+}
+
+func (c *TestDatastreamClient) GetStatus() client.Status {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (c *TestDatastreamClient) UpdateProgress(u uint64) {
+	//TODO implement me
+	panic("implement me")
 }
 
 func NewTestDatastreamClient(fullL2Blocks []types.FullL2Block, gerUpdates []types.GerUpdate) *TestDatastreamClient {
@@ -60,4 +72,7 @@ func (c *TestDatastreamClient) GetStreamingAtomic() *atomic.Bool {
 }
 func (c *TestDatastreamClient) GetProgressAtomic() *atomic.Uint64 {
 	return &c.progress
+}
+func (c *TestDatastreamClient) GetSliceManager() *slice_manager.SliceManager {
+	return nil
 }

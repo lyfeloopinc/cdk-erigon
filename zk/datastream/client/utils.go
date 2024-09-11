@@ -65,7 +65,7 @@ func readBuffer(conn net.Conn, n uint32) ([]byte, error) {
 	}
 
 	if uint32(rbc) != n {
-		return []byte{}, fmt.Errorf("expected to read %d bytes, bute got %d", n, rbc)
+		return []byte{}, fmt.Errorf("expected to read %d bytes, but got %d", n, rbc)
 	}
 
 	return buffer, nil
@@ -76,6 +76,6 @@ func parseIoReadError(err error) error {
 	if err == io.EOF {
 		return errors.New("server close connection")
 	} else {
-		return fmt.Errorf("reading from server: %v", err)
+		return fmt.Errorf("reading from server: %w", err)
 	}
 }

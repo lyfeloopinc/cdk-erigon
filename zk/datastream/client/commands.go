@@ -15,7 +15,7 @@ const (
 
 // sendHeaderCmd sends the header command to the server.
 func (c *StreamClient) sendHeaderCmd() error {
-	err := c.sendCommand(CmdHeader)
+	err := c.sendCommandAndStreamType(CmdHeader)
 	if err != nil {
 		return fmt.Errorf("%s %v", c.id, err)
 	}
@@ -26,7 +26,7 @@ func (c *StreamClient) sendHeaderCmd() error {
 // sendStartBookmarkCmd sends a start command to the server, indicating
 // that the client wishes to start streaming from the given bookmark
 func (c *StreamClient) sendStartBookmarkCmd(bookmark []byte) error {
-	err := c.sendCommand(CmdStartBookmark)
+	err := c.sendCommandAndStreamType(CmdStartBookmark)
 	if err != nil {
 		return err
 	}
@@ -42,10 +42,26 @@ func (c *StreamClient) sendStartBookmarkCmd(bookmark []byte) error {
 	return nil
 }
 
+// sendEntryCommand sends an entry command to the server, indicating
+// that the client wishes to stream the given entry number.
+func (c *StreamClient) sendEntryCommand(entryNum uint64) error {
+	err := c.sendCommandAndStreamType(CmdEntry)
+	if err != nil {
+		return err
+	}
+
+	// Send entry number
+	if err := writeFullUint64ToConn(c.conn, entryNum); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // sendStartCmd sends a start command to the server, indicating
 // that the client wishes to start streaming from the given entry number.
 func (c *StreamClient) sendStartCmd(from uint64) error {
-	err := c.sendCommand(CmdStart)
+	err := c.sendCommandAndStreamType(CmdStart)
 	if err != nil {
 		return err
 	}
@@ -60,7 +76,7 @@ func (c *StreamClient) sendStartCmd(from uint64) error {
 
 // sendHeaderCmd sends the header command to the server.
 func (c *StreamClient) sendStopCmd() error {
-	err := c.sendCommand(CmdStop)
+	err := c.sendCommandAndStreamType(CmdStop)
 	if err != nil {
 		return fmt.Errorf("%s %v", c.id, err)
 	}
@@ -68,7 +84,7 @@ func (c *StreamClient) sendStopCmd() error {
 	return nil
 }
 
-func (c *StreamClient) sendCommand(cmd Command) error {
+func (c *StreamClient) sendCommandAndStreamType(cmd Command) error {
 	// Send command
 	if err := writeFullUint64ToConn(c.conn, uint64(cmd)); err != nil {
 		return fmt.Errorf("%s %v", c.id, err)

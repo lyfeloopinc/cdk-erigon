@@ -57,6 +57,43 @@ func ProgressPrinter(message string, total uint64, quiet bool) (chan uint64, fun
 	return progress, cleanup
 }
 
+func ProgressPrinterCumulative(message string) (chan uint64, func()) {
+	progress := make(chan uint64)
+	ctDone := make(chan bool)
+	var once sync.Once
+
+	cleanup := func() {
+		once.Do(func() {
+			close(ctDone)
+		})
+	}
+
+	go func() {
+		defer close(progress)
+		defer cleanup()
+
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		var pc uint64
+
+		for {
+			select {
+			case newPc := <-progress:
+				pc += newPc
+			case <-ticker.C:
+				if pc > 0 {
+					log.Info(fmt.Sprintf("%s: %d", message, pc))
+				}
+			case <-ctDone:
+				return
+			}
+		}
+	}()
+
+	return progress, cleanup
+}
+
 // prints progress every 10 seconds
 // returns a channel to send progress to, and a function to stop the printer routine
 func ProgressPrinterWithoutTotal(message string) (chan uint64, func()) {
