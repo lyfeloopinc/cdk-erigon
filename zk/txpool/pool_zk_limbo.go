@@ -68,7 +68,7 @@ type LimboBlockTransactionDetails struct {
 	Sender      common.Address
 }
 
-func newLimboBatchTransactionDetails(rlp, streamBytes []byte, hash common.Hash, sender common.Address) *LimboBlockTransactionDetails {
+func newLimboBlockTransactionDetails(rlp, streamBytes []byte, hash common.Hash, sender common.Address) *LimboBlockTransactionDetails {
 	return &LimboBlockTransactionDetails{
 		Rlp:         rlp,
 		StreamBytes: streamBytes,
@@ -137,7 +137,7 @@ func (_this *Limbo) getFirstTxWithoutRootByBlockNumber(blockNumber uint64) (*Lim
 					return nil, nil
 				}
 				if blockNumber > limboBlock.BlockNumber {
-					panic(fmt.Errorf("requested batch %d while the network is already on %d", limboBlock.BlockNumber, blockNumber))
+					panic(fmt.Errorf("requested block %d while the network is already on %d", limboBlock.BlockNumber, blockNumber))
 				}
 
 				return limboBlock, limboTx
@@ -180,15 +180,15 @@ func (_this *LimboBlockDetails) resizeTransactions(txIndex int) {
 	if txIndex == -1 {
 		return
 	}
-
 	size := txIndex + 1
+
 	for i := len(_this.Transactions); i < size; i++ {
 		_this.Transactions = append(_this.Transactions, &LimboBlockTransactionDetails{})
 	}
 }
 
 func (_this *LimboBlockDetails) AppendTransaction(rlp, streamBytes []byte, hash common.Hash, sender common.Address) uint32 {
-	_this.Transactions = append(_this.Transactions, newLimboBatchTransactionDetails(rlp, streamBytes, hash, sender))
+	_this.Transactions = append(_this.Transactions, newLimboBlockTransactionDetails(rlp, streamBytes, hash, sender))
 	return uint32(len(_this.Transactions))
 }
 
