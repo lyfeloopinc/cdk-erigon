@@ -144,7 +144,7 @@ func sequencingStageStep(
 	batchContext := newBatchContext(ctx, &cfg, &historyCfg, s, sdb)
 	batchState := newBatchState(forkId, batchNumberForStateInitialization, cfg.zk.HasExecutors(), cfg.zk.L1SyncStartBlock > 0, cfg.txPool, resequenceBatchJob)
 	blockDataSizeChecker := newBlockDataChecker()
-	streamWriter := newSequencerBatchStreamWriter(batchContext, batchState, lastBatch) // using lastBatch (rather than batchState.batchNumber) is not mistake
+	streamWriter := newSequencerBatchStreamWriter(batchContext, batchState)
 
 	// injected batch
 	if executionAt == 0 {
@@ -256,7 +256,7 @@ func sequencingStageStep(
 			}
 		}
 
-		header, parentBlock, err := prepareHeader(sdb.tx, blockNumber-1, batchState.blockState.getDeltaTimestamp(), batchState.getBlockHeaderForcedTimestamp(), batchState.forkId, batchState.getCoinbase(&cfg))
+		header, parentBlock, err := prepareHeader(sdb.tx, blockNumber-1, batchState.blockState.getDeltaTimestamp(), batchState.getBlockHeaderForcedTimestamp(blockNumber), batchState.forkId, batchState.getCoinbase(&cfg))
 		if err != nil {
 			return err
 		}
@@ -316,7 +316,7 @@ func sequencingStageStep(
 				}
 			default:
 				if batchState.isLimboRecovery() {
-					batchState.blockState.transactionsForInclusion, err = getLimboTransaction(ctx, cfg, batchState.limboRecoveryData.limboTxHash)
+					batchState.blockState.transactionsForInclusion, err = getLimboTransaction(ctx, cfg, blockNumber, batchState.limboRecoveryData.limboTxHash)
 					if err != nil {
 						return err
 					}
@@ -460,7 +460,6 @@ func sequencingStageStep(
 				}
 
 				if batchState.isLimboRecovery() {
-					runLoopBlocks = false
 					break LOOP_TRANSACTIONS
 				}
 			}
@@ -473,6 +472,9 @@ func sequencingStageStep(
 		if batchState.isLimboRecovery() {
 			stateRoot := block.Root()
 			cfg.txPool.UpdateLimboRootByTxHash(batchState.limboRecoveryData.limboTxHash, &stateRoot)
+			if batchState.limboRecoveryData.isThereAnyBlocksLeft(blockNumber) {
+				continue
+			}
 			return fmt.Errorf("[%s] %w: %s = %s", s.LogPrefix(), zk.ErrLimboState, batchState.limboRecoveryData.limboTxHash.Hex(), stateRoot.Hex())
 		}
 
@@ -507,7 +509,7 @@ func sequencingStageStep(
 		if err != nil {
 			return err
 		}
-		cfg.legacyVerifier.StartAsyncVerification(batchState.forkId, batchState.batchNumber, block.Root(), counters.UsedAsMap(), batchState.builtBlocks, useExecutorForVerification, batchContext.cfg.zk.SequencerBatchVerificationTimeout)
+		cfg.legacyVerifier.StartAsyncVerification(batchContext.s.LogPrefix(), batchState.forkId, batchState.batchNumber, block.Root(), counters.UsedAsMap(), batchState.builtBlocks, useExecutorForVerification, batchContext.cfg.zk.SequencerBatchVerificationTimeout)
 
 		// check for new responses from the verifier
 		needsUnwind, err := updateStreamAndCheckRollback(batchContext, batchState, streamWriter, u)
@@ -527,12 +529,6 @@ func sequencingStageStep(
 		}
 	}
 
-	cfg.legacyVerifier.Wait()
-	needsUnwind, err := updateStreamAndCheckRollback(batchContext, batchState, streamWriter, u)
-	if err != nil || needsUnwind {
-		return err
-	}
-
 	/*
 		if adding something below that line we must ensure
 		- it is also handled property in processInjectedInitialBatch
@@ -540,10 +536,6 @@ func sequencingStageStep(
 		- it is also handled property in doCheckForBadBatch
 		- it is unwound correctly
 	*/
-
-	if err := finalizeLastBatchInDatastream(batchContext, batchState.batchNumber, block.NumberU64()); err != nil {
-		return err
-	}
 
 	// TODO: It is 99% sure that there is no need to write this in any of processInjectedInitialBatch, alignExecutionToDatastream, doCheckForBadBatch but it is worth double checknig
 	// the unwind of this value is handed by UnwindExecutionStageDbWrites
