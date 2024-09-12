@@ -36,7 +36,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 0xPolygon/kurtosis-cdk
-          ref: 3debe0a4dd000e02f7e6bde3247432211bf0336f
+          ref: main
           path: kurtosis-cdk
 
       - name: Install Kurtosis CDK tools
@@ -71,7 +71,6 @@ jobs:
         working-directory: ./kurtosis-cdk
         run: |
           /usr/local/bin/yq -i '.args.cdk_erigon_node_image = "cdk-erigon:local"' params.yml
-          /usr/local/bin/yq -i '.args.cdk_node_image = "jerrycgh/cdk:eaafcc12f196a0aa9d46c2a994d7f6f58c092f3b"' params.yml
 
       - name: Deploy Kurtosis CDK package
         working-directory: ./kurtosis-cdk
