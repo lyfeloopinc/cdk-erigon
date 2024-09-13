@@ -41,6 +41,8 @@ type ErigonDb interface {
 type HermezDb interface {
 	WriteForkId(batchNumber uint64, forkId uint64) error
 	WriteForkIdBlockOnce(forkId, blockNum uint64) error
+	WriteForkFirstBatchOnce(forkId, batchNo uint64) error
+	WriteForkLastBatch(forkId, batchNo uint64) error
 	WriteBlockBatch(l2BlockNumber uint64, batchNumber uint64) error
 	WriteEffectiveGasPricePercentage(txHash common.Hash, effectiveGasPricePercentage uint8) error
 	DeleteEffectiveGasPricePercentages(txHashes *[]common.Hash) error
@@ -223,8 +225,13 @@ func SpawnStageBatches(
 	streamingAtomic := cfg.dsClient.GetStreamingAtomic()
 
 	prevAmountBlocksWritten := blocksWritten
+	count := 0
 LOOP:
 	for {
+		count++
+		if count == 1000 {
+			break LOOP
+		}
 		// get batch start and use to update forkid
 		// get block
 		// if no blocks available should block
@@ -244,6 +251,18 @@ LOOP:
 					// but, we need it re-populate our own stream
 					if err = hermezDb.WriteForkId(entry.Number, entry.ForkId); err != nil {
 						return err
+					}
+				}
+				if entry.Number > 0 {
+					if entry.Number >= 36 {
+						time.Sleep(time.Nanosecond)
+					}
+					if err := hermezDb.WriteForkFirstBatchOnce(entry.ForkId, entry.Number); err != nil {
+						return fmt.Errorf("write fork first batch error: %v", err)
+					}
+
+					if err := hermezDb.WriteForkLastBatch(entry.ForkId, entry.Number); err != nil {
+						return fmt.Errorf("write fork last batch error: %v", err)
 					}
 				}
 			case *types.BatchEnd:
