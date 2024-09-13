@@ -251,6 +251,11 @@ func sequencingStageStep(
 
 		if batchState.isResequence() {
 			if !batchState.resequenceBatchJob.HasMoreBlockToProcess() {
+				for streamWriter.legacyVerifier.HasPendingVerifications() {
+					streamWriter.CommitNewUpdates()
+					time.Sleep(1 * time.Second)
+				}
+
 				runLoopBlocks = false
 				break
 			}
