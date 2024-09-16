@@ -155,7 +155,7 @@ else
 fi
 
 echo "Waiting for batch verification"
-if ! wait_for_l1_batch 600 "verified"; then
+if ! wait_for_l1_batch 1200 "verified"; then
     echo "Failed to wait for batch verification"
     exit 1
 fi
