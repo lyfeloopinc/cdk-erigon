@@ -206,8 +206,8 @@ func TestGetAndSetForkId(t *testing.T) {
 	}
 
 	for _, forkInterval := range forkIntervals {
-		for b := uint64(forkInterval.FromBatchNumber); b <= uint64(forkInterval.ToBatchNumber); b++ {
-			err := db.WriteForkId(b, uint64(forkInterval.ForkId))
+		for b := forkInterval.FromBatchNumber; b <= forkInterval.ToBatchNumber; b++ {
+			err := db.WriteForkId(b, forkInterval.ForkId)
 			require.NoError(t, err, "Failed to write ForkId")
 		}
 	}
@@ -571,5 +571,122 @@ func TestFirstAndLastForkBatch(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(tc.expectedLastBatch, batch)
 		assert.Equal(tc.found, found)
+	}
+}
+
+func TestDeleteForkId(t *testing.T) {
+	type forkInterval struct {
+		ForkId          uint64
+		FromBatchNumber uint64
+		ToBatchNumber   uint64
+	}
+	forkIntervals := []forkInterval{
+		{1, 1, 10},
+		{2, 11, 20},
+		{3, 21, 30},
+		{4, 31, 40},
+		{5, 41, 50},
+		{6, 51, 60},
+		{7, 61, 70},
+	}
+
+	testCases := []struct {
+		name                           string
+		fromBatchToDelete              uint64
+		toBatchToDelete                uint64
+		expectedDeletedForksIds        []uint64
+		expectedRemainingForkIntervals []forkInterval
+	}{
+		{"delete fork id only for the last batch", 70, 70, nil, []forkInterval{
+			{1, 1, 10},
+			{2, 11, 20},
+			{3, 21, 30},
+			{4, 31, 40},
+			{5, 41, 50},
+			{6, 51, 60},
+			{7, 61, 69},
+		}},
+		{"delete fork id for batches that don't exist", 80, 90, nil, []forkInterval{
+			{1, 1, 10},
+			{2, 11, 20},
+			{3, 21, 30},
+			{4, 31, 40},
+			{5, 41, 50},
+			{6, 51, 60},
+			{7, 61, 70},
+		}},
+		{"delete fork id for batches that cross multiple forks from some point until the last one - unwind", 27, 70, []uint64{4, 5, 6, 7}, []forkInterval{
+			{1, 1, 10},
+			{2, 11, 20},
+			{3, 21, 26},
+		}},
+		{"delete fork id for batches that cross multiple forks from zero to some point - prune", 0, 36, []uint64{1, 2, 3}, []forkInterval{
+			{4, 37, 40},
+			{5, 41, 50},
+			{6, 51, 60},
+			{7, 61, 70},
+		}},
+		{"delete fork id for batches that cross multiple forks from some point after the beginning to some point before the end - hole", 23, 42, []uint64{4}, []forkInterval{
+			{1, 1, 10},
+			{2, 11, 20},
+			{3, 21, 22},
+			{5, 43, 50},
+			{6, 51, 60},
+			{7, 61, 70},
+		}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, cleanup := GetDbTx()
+			defer cleanup()
+			db := NewHermezDb(tx)
+
+			for _, forkInterval := range forkIntervals {
+				for b := forkInterval.FromBatchNumber; b <= forkInterval.ToBatchNumber; b++ {
+					err := db.WriteForkId(b, forkInterval.ForkId)
+					require.NoError(t, err, "Failed to write ForkId")
+
+					err = db.WriteForkFirstBatchOnce(forkInterval.ForkId, b)
+					require.NoError(t, err, "Failed to write ForkId")
+
+					err = db.WriteForkLastBatch(forkInterval.ForkId, b)
+					require.NoError(t, err, "Failed to write fork last batch")
+				}
+			}
+
+			err := db.DeleteForkIds(tc.fromBatchToDelete, tc.toBatchToDelete)
+			require.NoError(t, err)
+
+			for batchNum := tc.fromBatchToDelete; batchNum <= tc.toBatchToDelete; batchNum++ {
+				forkId, err := db.GetForkId(batchNum)
+				require.NoError(t, err)
+				assert.Equal(t, uint64(0), forkId)
+			}
+
+			for _, forkId := range tc.expectedDeletedForksIds {
+				firstBatch, found, err := db.GetForkFirstBatch(forkId)
+				require.NoError(t, err)
+				assert.False(t, found)
+				assert.Equal(t, uint64(0), firstBatch)
+
+				lastBatch, found, err := db.GetForkLastBatch(forkId)
+				require.NoError(t, err)
+				assert.False(t, found)
+				assert.Equal(t, uint64(0), lastBatch)
+			}
+
+			for _, fork := range tc.expectedRemainingForkIntervals {
+				firstForkId, found, err := db.GetForkFirstBatch(fork.ForkId)
+				require.NoError(t, err)
+				assert.True(t, found)
+				assert.Equal(t, fork.FromBatchNumber, firstForkId)
+
+				lastForkId, found, err := db.GetForkLastBatch(fork.ForkId)
+				require.NoError(t, err)
+				assert.True(t, found)
+				assert.Equal(t, fork.ToBatchNumber, lastForkId)
+			}
+		})
 	}
 }

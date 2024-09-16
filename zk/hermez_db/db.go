@@ -1117,7 +1117,99 @@ func (db *HermezDb) WriteForkIdBlockOnce(forkId, blockNum uint64) error {
 }
 
 func (db *HermezDb) DeleteForkIds(fromBatchNum, toBatchNum uint64) error {
-	return db.deleteFromBucketWithUintKeysRange(FORKIDS, fromBatchNum, toBatchNum)
+	if toBatchNum < fromBatchNum {
+		return errors.New("invalid block range, toBatchNum must be greater or equal to fromBatchNum")
+	}
+
+	allForkIds, allFirstBatches, err := db.GetAllForkFirstBatch()
+	if err != nil {
+		return err
+	}
+
+	// example how the conditions below works
+	//
+	// assuming the state is the following:
+	// | fork | first batch | last batch |
+	// |    1 |           1 |         10 |
+	// |    2 |          11 |         20 |
+	// |    3 |          21 |         30 |
+	// |    4 |          31 |         40 |
+	//
+	// delete from 13 to 25, result:
+	// | fork | first batch | last batch |
+	// |    1 |           1 |         10 |
+	// |    2 |          11 |         13 |
+	// |    3 |          25 |         30 |
+	// |    4 |          31 |         40 |
+	// obs: since the delete range generates a hole in the batches,
+	// the same hole is represented in the batch intervals between
+	// forks 3 and 4.
+	//
+	// delete from 0 to 27, result:
+	// | fork | first batch | last batch |
+	// |    3 |          27 |         30 |
+	// |    4 |          31 |         40 |
+	// obs: since the range deletes from the beginning, the forks related
+	// to the deleted batches are removed and the interval is adjusted
+	// to match the existent batches
+	//
+	// delete from 13 to 99999, result:
+	// | fork | first batch | last batch |
+	// |    1 |           1 |         10 |
+	// |    2 |          11 |         13 |
+	// obs: since the range deletes from a point in time until the end,
+	// the forks related to the deleted batches are removed and the
+	// interval is adjusted to match the existent batches
+
+	for i, forkId := range allForkIds {
+		forkFirstBatch := allFirstBatches[i]
+		forkLastBatch, _, err := db.GetForkLastBatch(forkId)
+		if err != nil {
+			return err
+		}
+
+		if forkFirstBatch > toBatchNum || forkLastBatch < fromBatchNum {
+			// if fork is batch range is outside the delete batch range
+			// then skip fork id
+
+			continue
+		} else if forkFirstBatch >= fromBatchNum && forkLastBatch <= toBatchNum {
+
+			// if fork interval batch range is within the batch range to delete,
+			// then the whole fork is deleted
+			err := db.tx.Delete(FORK_FIRST_BATCH, Uint64ToBytes(forkId))
+			if err != nil {
+				return err
+			}
+			err = db.tx.Delete(FORK_LAST_BATCH, Uint64ToBytes(forkId))
+			if err != nil {
+				return err
+			}
+		} else if forkFirstBatch <= fromBatchNum && forkLastBatch <= toBatchNum {
+
+			// if fork interval batch range intersects with the beginning of the delete batch range,
+			// then the last batch is updated to the beginning of the delete batch range,
+			err := db.WriteForkLastBatch(forkId, fromBatchNum-1)
+			if err != nil {
+				return err
+			}
+		} else if forkFirstBatch >= fromBatchNum && forkLastBatch >= toBatchNum {
+
+			// if fork interval batch range intersects with the end of the delete batch range,
+			// then the first batch is updated to the end of the delete batch range
+			err := db.WriteForkFirstBatch(forkId, toBatchNum+1)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	err = db.deleteFromBucketWithUintKeysRange(FORKIDS, fromBatchNum, toBatchNum)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (db *HermezDb) WriteEffectiveGasPricePercentage(txHash common.Hash, txPricePercentage uint8) error {
@@ -1848,6 +1940,13 @@ func (db *HermezDbReader) GetForkLastBatch(forkId uint64) (uint64, bool, error) 
 	return batchNum, found, err
 }
 
+func (db *HermezDb) WriteForkFirstBatch(forkId, batch uint64) error {
+	k := Uint64ToBytes(forkId)
+	v := Uint64ToBytes(batch)
+
+	return db.tx.Put(FORK_FIRST_BATCH, k, v)
+}
+
 func (db *HermezDb) WriteForkFirstBatchOnce(forkId, batchNo uint64) error {
 	firstBatchNo, found, err := db.GetForkFirstBatch(forkId)
 	if err != nil {
@@ -1858,10 +1957,7 @@ func (db *HermezDb) WriteForkFirstBatchOnce(forkId, batchNo uint64) error {
 		return nil
 	}
 
-	k := Uint64ToBytes(forkId)
-	v := Uint64ToBytes(batchNo)
-
-	return db.tx.Put(FORK_FIRST_BATCH, k, v)
+	return db.WriteForkFirstBatch(forkId, batchNo)
 }
 
 func (db *HermezDb) WriteForkLastBatch(forkId, batch uint64) error {
