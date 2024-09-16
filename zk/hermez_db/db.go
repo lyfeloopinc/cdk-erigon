@@ -1027,11 +1027,7 @@ func (db *HermezDbReader) GetForkId(batchNo uint64) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	forkId := BytesToUint64(v)
-	if forkId == 0 {
-		return 0, errors.New("the network cannot have a 0 fork id")
-	}
-	return forkId, nil
+	return BytesToUint64(v), nil
 }
 
 func (db *HermezDb) WriteForkId(batchNo, forkId uint64) error {

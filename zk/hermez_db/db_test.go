@@ -2,7 +2,6 @@ package hermez_db
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -216,28 +215,27 @@ func TestGetAndSetForkId(t *testing.T) {
 	testCases := []struct {
 		batchNo        uint64
 		expectedForkId uint64
-		expectedError  error
 	}{
-		{0, 1, nil}, // batch 0 = forkID, special case, batch 0 has the same forkId as batch 1
+		{0, 1}, // batch 0 = forkID, special case, batch 0 has the same forkId as batch 1
 
-		{1, 1, nil},  // batch 1  = forkId 1, first batch for forkId 1
-		{5, 1, nil},  // batch 5  = forkId 1, a batch between first and last for forkId 1
-		{10, 1, nil}, // batch 10 = forkId 1, last batch for forkId 1
+		{1, 1},  // batch 1  = forkId 1, first batch for forkId 1
+		{5, 1},  // batch 5  = forkId 1, a batch between first and last for forkId 1
+		{10, 1}, // batch 10 = forkId 1, last batch for forkId 1
 
-		{11, 2, nil},  // batch 11  = forkId 1, first batch for forkId 2
-		{50, 2, nil},  // batch 50  = forkId 1, a batch between first and last for forkId 2
-		{100, 2, nil}, // batch 100 = forkId 1, last batch for forkId 2
+		{11, 2},  // batch 11  = forkId 1, first batch for forkId 2
+		{50, 2},  // batch 50  = forkId 1, a batch between first and last for forkId 2
+		{100, 2}, // batch 100 = forkId 1, last batch for forkId 2
 
-		{101, 3, nil},  // batch 101  = forkId 1, first batch for forkId 3
-		{500, 3, nil},  // batch 500  = forkId 1, a batch between first and last for forkId 3
-		{1000, 3, nil}, // batch 1000 = forkId 1, last batch for forkId 3
+		{101, 3},  // batch 101  = forkId 1, first batch for forkId 3
+		{500, 3},  // batch 500  = forkId 1, a batch between first and last for forkId 3
+		{1000, 3}, // batch 1000 = forkId 1, last batch for forkId 3
 
-		{1001, 0, errors.New("the network cannot have a 0 fork id")}, // batch 1001 = a batch out of the range of the known forks
+		{1001, 0}, // batch 1001 = a batch out of the range of the known forks
 	}
 
 	for _, tc := range testCases {
 		fetchedForkId, err := db.GetForkId(tc.batchNo)
-		assert.Equal(t, tc.expectedError, err, "invalid expected error when getting fork id by batch number")
+		assert.NoError(t, err)
 		assert.Equal(t, tc.expectedForkId, fetchedForkId, "invalid expected fork id when getting fork id by batch number")
 	}
 }
