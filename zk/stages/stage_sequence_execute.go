@@ -341,6 +341,7 @@ func SpawnSequencingStage(
 				}
 
 				if batchState.isLimboRecovery() {
+					runLoopBlocks = false
 					break LOOP_TRANSACTIONS
 				}
 			}
