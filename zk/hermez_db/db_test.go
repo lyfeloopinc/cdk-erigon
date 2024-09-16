@@ -503,3 +503,57 @@ func TestBatchBlocks(t *testing.T) {
 		t.Fatal("Expected 1000 blocks")
 	}
 }
+
+func TestFirstAndLastForkBatch(t *testing.T) {
+	assert := assert.New(t)
+
+	tx, cleanup := GetDbTx()
+	defer cleanup()
+
+	db := NewHermezDb(tx)
+
+	numberOfForks := 4
+	batchesPerBlock := 10
+
+	for f := 1; f <= numberOfForks; f++ {
+		forkId := uint64(f)
+		for b := 1; b <= batchesPerBlock; b++ {
+			batchNumber := uint64(((f - 1) * batchesPerBlock) + b)
+			err := db.WriteForkFirstBatchOnce(forkId, batchNumber)
+			require.NoError(t, err)
+			err = db.WriteForkLastBatch(forkId, batchNumber)
+			require.NoError(t, err)
+		}
+	}
+
+	testCases := []struct {
+		forkId             uint64
+		expectedFirstBatch uint64
+		expectedLastBatch  uint64
+		found              bool
+	}{
+		{1, 1, 10, true},
+		{2, 11, 20, true},
+		{3, 21, 30, true},
+		{4, 31, 40, true},
+		{5, 0, 0, false},
+	}
+
+	allForks, allFirstBatches, err := db.GetAllForkFirstBatch()
+	require.NoError(t, err)
+
+	assert.Equal(numberOfForks, len(allForks))
+	assert.Equal(numberOfForks, len(allFirstBatches))
+
+	for _, tc := range testCases {
+		batch, found, err := db.GetForkFirstBatch(tc.forkId)
+		require.NoError(t, err)
+		assert.Equal(tc.expectedFirstBatch, batch)
+		assert.Equal(tc.found, found)
+
+		batch, found, err = db.GetForkLastBatch(tc.forkId)
+		require.NoError(t, err)
+		assert.Equal(tc.expectedLastBatch, batch)
+		assert.Equal(tc.found, found)
+	}
+}
