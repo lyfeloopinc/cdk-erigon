@@ -225,13 +225,8 @@ func SpawnStageBatches(
 	streamingAtomic := cfg.dsClient.GetStreamingAtomic()
 
 	prevAmountBlocksWritten := blocksWritten
-	count := 0
 LOOP:
 	for {
-		count++
-		if count == 1000 {
-			break LOOP
-		}
 		// get batch start and use to update forkid
 		// get block
 		// if no blocks available should block
