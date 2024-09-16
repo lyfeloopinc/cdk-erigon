@@ -8,6 +8,7 @@ import (
 	"github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/gateway-fm/cdk-erigon-lib/kv/mdbx"
+	"github.com/ledgerwatch/erigon/rpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -191,36 +192,46 @@ func TestGetAndSetLatestUnordered(t *testing.T) {
 }
 
 func TestGetAndSetForkId(t *testing.T) {
+	tx, cleanup := GetDbTx()
+	defer cleanup()
+	db := NewHermezDb(tx)
+
+	forkIntervals := []rpc.ForkInterval{
+		{ForkId: 1, FromBatchNumber: 1, ToBatchNumber: 10},
+		{ForkId: 2, FromBatchNumber: 11, ToBatchNumber: 100},
+		{ForkId: 3, FromBatchNumber: 101, ToBatchNumber: 1000},
+	}
+
+	for _, forkInterval := range forkIntervals {
+		for b := uint64(forkInterval.FromBatchNumber); b <= uint64(forkInterval.ToBatchNumber); b++ {
+			err := db.WriteForkId(b, uint64(forkInterval.ForkId))
+			require.NoError(t, err, "Failed to write ForkId")
+		}
+	}
 
 	testCases := []struct {
-		batchNo uint64
-		forkId  uint64
+		batchNo        uint64
+		expectedForkId uint64
 	}{
-		{9, 0},    // batchNo < 10 -> forkId = 0
-		{10, 1},   // batchNo = 10 -> forkId = 1
-		{11, 1},   // batchNo > 10 -> forkId = 1
-		{99, 1},   // batchNo < 100 -> forkId = 1
-		{100, 2},  // batchNo >= 100 -> forkId = 2
-		{1000, 2}, // batchNo > 100 -> forkId = 2
+		{0, 1},
+
+		{1, 1},
+		{5, 1},
+		{10, 1},
+
+		{11, 2},
+		{50, 2},
+		{100, 2},
+
+		{101, 3},
+		{500, 3},
+		{1000, 3},
 	}
 
 	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("BatchNo: %d ForkId: %d", tc.batchNo, tc.forkId), func(t *testing.T) {
-			tx, cleanup := GetDbTx()
-			db := NewHermezDb(tx)
-
-			err := db.WriteForkId(10, 1)
-			require.NoError(t, err, "Failed to write ForkId")
-			err = db.WriteForkId(tc.batchNo, tc.forkId)
-			require.NoError(t, err, "Failed to write ForkId")
-			err = db.WriteForkId(100, 2)
-			require.NoError(t, err, "Failed to write ForkId")
-
-			fetchedForkId, err := db.GetForkId(tc.batchNo)
-			require.NoError(t, err, "Failed to get ForkId")
-			assert.Equal(t, tc.forkId, fetchedForkId, "Fetched ForkId doesn't match expected")
-			cleanup()
-		})
+		fetchedForkId, err := db.GetForkId(tc.batchNo)
+		require.NoError(t, err, "Failed to get ForkId")
+		assert.Equal(t, tc.expectedForkId, fetchedForkId, "Fetched ForkId doesn't match expected")
 	}
 }
 
