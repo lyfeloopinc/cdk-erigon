@@ -249,9 +249,6 @@ LOOP:
 					}
 				}
 				if entry.Number > 0 {
-					if entry.Number >= 36 {
-						time.Sleep(time.Nanosecond)
-					}
 					if err := hermezDb.WriteForkFirstBatchOnce(entry.ForkId, entry.Number); err != nil {
 						return fmt.Errorf("write fork first batch error: %v", err)
 					}
