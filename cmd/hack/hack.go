@@ -55,6 +55,7 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/debug"
 	"github.com/ledgerwatch/erigon/turbo/logging"
 	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
+	"github.com/ledgerwatch/erigon/zk/hermez_db"
 )
 
 var (
@@ -352,6 +353,10 @@ func dumpAll(chaindata, output string) error {
 				return err
 			}
 			err = tx.ForEach(buc, nil, func(k, v []byte) error {
+				if buc == hermez_db.FORK_FIRST_BATCH {
+					fmt.Println("k: ", hermez_db.BytesToUint64(k))
+					fmt.Println("v: ", hermez_db.BytesToUint64(v))
+				}
 				if _, err = file.WriteString(fmt.Sprintf("%x,%x\n", k, v)); err != nil {
 					return err
 				}
