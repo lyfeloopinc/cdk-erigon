@@ -334,6 +334,30 @@ func dumpAll(chaindata, output string) error {
 			return err
 		}
 	}
+	tx, err := db.BeginRw(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	err = hermez_db.CreateHermezBuckets(tx)
+	if err != nil {
+		panic(err)
+	}
+	c, err := tx.Cursor(hermez_db.FORK_FIRST_BATCH)
+	if err != nil {
+		panic(err)
+	}
+	defer c.Close()
+
+	for k, v, err := c.First(); k != nil; k, v, err = c.Next() {
+		if err != nil {
+			break
+		}
+		currentForkId := hermez_db.BytesToUint64(k)
+		batchNum := hermez_db.BytesToUint64(v)
+		fmt.Printf("ForkId: %d, BatchNum: %d\n", currentForkId, batchNum)
+	}
+	fmt.Println("--------------------------------------------")
 
 	return db.View(context.Background(), func(tx kv.Tx) error {
 		buckets, err := tx.ListBuckets()
@@ -353,10 +377,6 @@ func dumpAll(chaindata, output string) error {
 				return err
 			}
 			err = tx.ForEach(buc, nil, func(k, v []byte) error {
-				if buc == hermez_db.FORK_FIRST_BATCH {
-					fmt.Println("k: ", hermez_db.BytesToUint64(k))
-					fmt.Println("v: ", hermez_db.BytesToUint64(v))
-				}
 				if _, err = file.WriteString(fmt.Sprintf("%x,%x\n", k, v)); err != nil {
 					return err
 				}
