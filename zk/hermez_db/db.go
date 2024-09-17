@@ -89,8 +89,6 @@ var HermezDbTables = []string{
 	PLAIN_STATE_VERSION,
 	ERIGON_VERSIONS,
 	BATCH_ENDS,
-	FORK_FIRST_BATCH,
-	FORK_LAST_BATCH,
 }
 
 type HermezDb struct {
