@@ -347,7 +347,6 @@ func dumpAll(chaindata, output string) error {
 	if err != nil {
 		panic(err)
 	}
-	defer c.Close()
 
 	for k, v, err := c.First(); k != nil; k, v, err = c.Next() {
 		if err != nil {
@@ -358,7 +357,7 @@ func dumpAll(chaindata, output string) error {
 		fmt.Printf("ForkId: %d, BatchNum: %d\n", currentForkId, batchNum)
 	}
 	fmt.Println("--------------------------------------------")
-
+	c.Close()
 	return db.View(context.Background(), func(tx kv.Tx) error {
 		buckets, err := tx.ListBuckets()
 		if err != nil {
