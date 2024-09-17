@@ -1947,14 +1947,18 @@ func (db *HermezDb) WriteForkFirstBatch(forkId, batch uint64) error {
 
 func (db *HermezDb) WriteForkFirstBatchOnce(forkId, batchNo uint64) error {
 	firstBatchNo, found, err := db.GetForkFirstBatch(forkId)
+
 	if err != nil {
 		log.Error(fmt.Sprintf("[HermezDb] Error getting forkIdBlock: %v", err))
 		return err
 	} else if found {
+		log.Error(fmt.Sprintf("[HermezDb] FOUND fork first batch: %d, batch:%v", forkId, firstBatchNo))
+
 		log.Debug(fmt.Sprintf("[HermezDb] Fork id first batch already exists: %d, batch:%v, set db failed.", forkId, firstBatchNo))
 		return nil
 	}
 
+	log.Error(fmt.Sprintf("[HermezDb] Writing fork first batch: %d, batch:%v", forkId, batchNo))
 	return db.WriteForkFirstBatch(forkId, batchNo)
 }
 
