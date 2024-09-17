@@ -100,6 +100,9 @@ for file in $(ls $dataPath/phase2-dump1); do
         echo "No difference found in $filename"
     else
         echo "Unexpected differences in $filename"
+        echo $(cat $dataPath/phase2-dump1/$filename)
+        echo "------------------------------------------------------------"
+        echo $(cat $dataPath/phase2-dump2/$filename)
         exit 2
     fi
 done
