@@ -349,6 +349,7 @@ func dumpAll(chaindata, output string) error {
 		fmt.Printf("ForkId: %d, Batch: %d\n", forkId, batch)
 		return nil
 	})
+	tx.Rollback()
 	return db.View(context.Background(), func(tx kv.Tx) error {
 		buckets, err := tx.ListBuckets()
 		if err != nil {
