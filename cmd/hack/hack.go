@@ -343,21 +343,12 @@ func dumpAll(chaindata, output string) error {
 	if err != nil {
 		panic(err)
 	}
-	c, err := tx.Cursor(hermez_db.FORK_FIRST_BATCH)
-	if err != nil {
-		panic(err)
-	}
-
-	for k, v, err := c.First(); k != nil; k, v, err = c.Next() {
-		if err != nil {
-			break
-		}
-		currentForkId := hermez_db.BytesToUint64(k)
-		batchNum := hermez_db.BytesToUint64(v)
-		fmt.Printf("ForkId: %d, BatchNum: %d\n", currentForkId, batchNum)
-	}
-	fmt.Println("--------------------------------------------")
-	c.Close()
+	tx.ForEach(hermez_db.FORK_FIRST_BATCH, nil, func(k, v []byte) error {
+		forkId := hermez_db.BytesToUint64(k)
+		batch := hermez_db.BytesToUint64(v)
+		fmt.Printf("ForkId: %d, Batch: %d\n", forkId, batch)
+		return nil
+	})
 	return db.View(context.Background(), func(tx kv.Tx) error {
 		buckets, err := tx.ListBuckets()
 		if err != nil {
