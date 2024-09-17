@@ -85,9 +85,9 @@ for file in $(ls $dataPath/phase1-dump1); do
             echo "Expected differences in $filename"
         else
             echo "Unexpected differences in $filename"
-            echo $(cat $dataPath/phase2-dump1/$filename)
+            echo $(cat $dataPath/phase1-dump1/$filename)
             echo "------------------------------------------------------------"
-            echo $(cat $dataPath/phase2-dump2/$filename)
+            echo $(cat $dataPath/phase1-dump2/$filename)
             exit 1
         fi
     fi
