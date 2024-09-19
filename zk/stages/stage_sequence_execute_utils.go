@@ -297,10 +297,6 @@ func prepareL1AndInfoTreeRelatedStuff(
 		ger = l1TreeUpdate.GER
 	}
 
-	if batchState.isResequence() && l1TreeUpdateIndex == 0 {
-		shouldWriteGerToContract = false
-	}
-
 	return
 }
 

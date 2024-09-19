@@ -95,8 +95,6 @@ func unwindZk(ctx context.Context, db kv.RwDB) error {
 		return err
 	}
 
-	stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, unwindBatchNo)
-
 	if err := tx.Commit(); err != nil {
 		return err
 	}
