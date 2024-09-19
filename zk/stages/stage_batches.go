@@ -169,17 +169,16 @@ func SpawnStageBatches(
 		return fmt.Errorf("failed to get last fork id, %w", err)
 	}
 
-	// TODO: uncomment
-	//stageExecProgress, err := stages.GetStageProgress(tx, stages.Execution)
-	//if err != nil {
-	//	return fmt.Errorf("failed to get stage exec progress, %w", err)
-	//}
+	stageExecProgress, err := stages.GetStageProgress(tx, stages.Execution)
+	if err != nil {
+		return fmt.Errorf("failed to get stage exec progress, %w", err)
+	}
 
 	// just exit the stage early if there is more execution work to do
-	//if stageExecProgress < lastBlockHeight {
-	//	log.Info(fmt.Sprintf("[%s] Execution behind, skipping stage", logPrefix))
-	//	return nil
-	//}
+	if stageExecProgress < lastBlockHeight {
+		log.Info(fmt.Sprintf("[%s] Execution behind, skipping stage", logPrefix))
+		return nil
+	}
 
 	lastHash := emptyHash
 	lastBlockRoot := emptyHash
@@ -188,6 +187,19 @@ func SpawnStageBatches(
 
 	// use the stream client or debug/sync limit flags to find out the l2 block height to finish the stage
 	targetL2Block := getTargetL2Block(cfg)
+
+	// stop the stage loop spinning too fast
+	if targetL2Block <= stageProgressBlockNo {
+		// loop 4 times with a 250ms pause checking again targetL2Block
+		for i := 0; i < 4; i++ {
+			time.Sleep(250 * time.Millisecond)
+			targetL2Block = getTargetL2Block(cfg)
+			if targetL2Block > stageProgressBlockNo {
+				break
+			}
+		}
+	}
+
 	offset := 0
 	for {
 		select {
