@@ -312,6 +312,9 @@ func SpawnSequencingStage(
 							break LOOP_TRANSACTIONS
 						}
 					case overflowGas:
+						if batchState.isAnyRecovery() {
+							panic(fmt.Sprintf("block gas limit overflow in recovery block: %d, gas: %d", blockNumber)
+						}
 						log.Info(fmt.Sprintf("[%s] gas overflowed adding transaction to block", logPrefix), "block", blockNumber, "tx-hash", txHash)
 						runLoopBlocks = false
 						break LOOP_TRANSACTIONS
