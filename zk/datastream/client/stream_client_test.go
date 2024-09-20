@@ -253,7 +253,7 @@ func TestStreamClientReadParsedProto(t *testing.T) {
 		close(errCh)
 	}()
 
-	parsedEntry, err := c.readParsedProto()
+	parsedEntry, err := ReadParsedProto(c)
 	require.NoError(t, err)
 	serverErr := <-errCh
 	require.NoError(t, serverErr)
