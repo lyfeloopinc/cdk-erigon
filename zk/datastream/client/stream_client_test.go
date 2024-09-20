@@ -54,7 +54,6 @@ func TestStreamClientReadHeaderEntry(t *testing.T) {
 		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
 		defer server.Close()
-		defer c.Stop()
 
 		c.conn = conn
 		t.Run(testCase.name, func(t *testing.T) {
@@ -120,7 +119,6 @@ func TestStreamClientReadResultEntry(t *testing.T) {
 		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
 		defer server.Close()
-		defer c.Stop()
 
 		c.conn = conn
 		t.Run(testCase.name, func(t *testing.T) {
@@ -190,7 +188,6 @@ func TestStreamClientReadFileEntry(t *testing.T) {
 	for _, testCase := range testCases {
 		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
-		defer c.Stop()
 		defer server.Close()
 
 		c.conn = conn
