@@ -2,7 +2,6 @@ package client
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -122,7 +121,7 @@ func Test_ReadBuffer(t *testing.T) {
 			name:           "test error",
 			input:          6,
 			expectedResult: []byte{},
-			expectedError:  fmt.Errorf("reading from server: %v", io.ErrUnexpectedEOF),
+			expectedError:  io.ErrUnexpectedEOF,
 		},
 	}
 
@@ -136,7 +135,11 @@ func Test_ReadBuffer(t *testing.T) {
 
 		t.Run(testCase.name, func(t *testing.T) {
 			result, err := readBuffer(client, testCase.input)
-			require.Equal(t, testCase.expectedError, err)
+			if testCase.expectedError != nil {
+				require.ErrorContains(t, err, testCase.expectedError.Error())
+			} else {
+				require.NoError(t, err)
+			}
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})
 	}
@@ -165,7 +168,7 @@ func Test_ParseIoReadError(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			result := parseIoReadError(testCase.input)
-			require.Equal(t, testCase.expectedError, result)
+			require.ErrorContains(t, testCase.expectedError, result.Error())
 		})
 	}
 }

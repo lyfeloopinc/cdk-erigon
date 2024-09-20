@@ -200,6 +200,8 @@ func TestStreamClientReadFileEntry(t *testing.T) {
 			result, err := c.NextFileEntry()
 			if testCase.expectedError != nil {
 				require.ErrorContains(t, err, testCase.expectedError.Error())
+			} else {
+				require.NoError(t, err)
 			}
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})
