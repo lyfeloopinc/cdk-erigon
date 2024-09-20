@@ -6,10 +6,11 @@ import (
 	"net"
 	"testing"
 
+	"io"
+
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
 	"github.com/stretchr/testify/require"
 	"gotest.tools/v3/assert"
-	"io"
 )
 
 func Test_readHeaderEntry(t *testing.T) {
@@ -123,6 +124,8 @@ func Test_readResultEntry(t *testing.T) {
 			result, err := c.readResultEntry([]byte{1})
 			if testCase.expectedError != nil {
 				require.ErrorIs(t, err, testCase.expectedError)
+			} else {
+				require.NoError(t, err)
 			}
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})
@@ -192,7 +195,9 @@ func Test_readFileEntry(t *testing.T) {
 
 			result, err := c.readFileEntry()
 			if testCase.expectedError != nil {
-				require.ErrorIs(t, err, testCase.expectedError)
+				require.ErrorContains(t, err, testCase.expectedError.Error())
+			} else {
+				require.NoError(t, err)
 			}
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})

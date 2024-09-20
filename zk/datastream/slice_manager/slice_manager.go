@@ -10,7 +10,10 @@ type SliceManager struct {
 }
 
 func NewSliceManager() *SliceManager {
-	return &SliceManager{}
+	return &SliceManager{
+		items: make([]interface{}, 0),
+		iMu:   sync.RWMutex{},
+	}
 }
 
 func (s *SliceManager) AddItem(item interface{}) {

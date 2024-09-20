@@ -9,13 +9,14 @@ import (
 	"reflect"
 	"time"
 
+	"io"
+	"sync"
+	"sync/atomic"
+
 	"github.com/ledgerwatch/erigon/zk/datastream/proto/github.com/0xPolygonHermez/zkevm-node/state/datastream"
+	"github.com/ledgerwatch/erigon/zk/datastream/slice_manager"
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
 	"github.com/ledgerwatch/log/v3"
-	"sync"
-	"github.com/ledgerwatch/erigon/zk/datastream/slice_manager"
-	"sync/atomic"
-	"io"
 )
 
 type StreamType uint64
