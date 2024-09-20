@@ -500,11 +500,7 @@ func ComputeL2TxHash(
 	}
 	hash += fromPart
 
-	hashed, err := utils.HashContractBytecode(hash)
-	if err != nil {
-		return common.Hash{}, err
-	}
-
+	hashed := utils.HashContractBytecode(hash)
 	return common.HexToHash(hashed), nil
 }
 
