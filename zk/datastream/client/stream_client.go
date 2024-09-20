@@ -166,21 +166,21 @@ func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error
 	}
 
 	latestEntryNum := h.TotalEntries - 1
-	var ok bool
 
 	for l2Block == nil && latestEntryNum > 0 {
 		if err := c.sendEntryCmdWrapper(latestEntryNum); err != nil {
 			return nil, err
 		}
 
-		parsedEntry, err := ReadParsedProto(c)
+		entry, err := c.NextFileEntry()
 		if err != nil {
 			return nil, err
 		}
 
-		l2Block, ok = parsedEntry.(*types.FullL2Block)
-		if ok {
-			return l2Block, nil
+		if entry.EntryType == types.EntryTypeL2Block {
+			if l2Block, err = types.UnmarshalL2Block(entry.Data); err != nil {
+				return nil, err
+			}
 		}
 
 		latestEntryNum--
