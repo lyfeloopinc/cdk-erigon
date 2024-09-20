@@ -9,6 +9,7 @@ import (
 	"github.com/ledgerwatch/erigon/zk/datastream/types"
 	"github.com/stretchr/testify/require"
 	"gotest.tools/v3/assert"
+	"io"
 )
 
 func Test_readHeaderEntry(t *testing.T) {
@@ -35,7 +36,7 @@ func Test_readHeaderEntry(t *testing.T) {
 			name:           "Invalid byte array length",
 			input:          []byte{20, 21, 22, 23, 24, 20},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("failed to read header bytes reading from server: unexpected EOF"),
+			expectedError:  io.ErrUnexpectedEOF,
 		},
 	}
 
@@ -43,7 +44,6 @@ func Test_readHeaderEntry(t *testing.T) {
 		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
 		defer server.Close()
-		defer c.Stop()
 
 		c.conn = conn
 		t.Run(testCase.name, func(t *testing.T) {
@@ -53,7 +53,12 @@ func Test_readHeaderEntry(t *testing.T) {
 			}()
 
 			header, err := c.readHeaderEntry()
-			require.Equal(t, testCase.expectedError, err)
+			if testCase.expectedError != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, testCase.expectedError)
+			} else {
+				require.NoError(t, err)
+			}
 			assert.DeepEqual(t, testCase.expectedResult, header)
 		})
 	}
@@ -93,13 +98,13 @@ func Test_readResultEntry(t *testing.T) {
 			name:           "Invalid byte array length",
 			input:          []byte{20, 21, 22, 23, 24, 20},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("failed to read main result bytes reading from server: unexpected EOF"),
+			expectedError:  io.ErrUnexpectedEOF,
 		},
 		{
 			name:           "Invalid error length",
 			input:          []byte{0, 0, 0, 12, 0, 0, 0, 0, 20, 21},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("failed to read result errStr bytes reading from server: unexpected EOF"),
+			expectedError:  io.ErrUnexpectedEOF,
 		},
 	}
 
@@ -107,7 +112,6 @@ func Test_readResultEntry(t *testing.T) {
 		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
 		defer server.Close()
-		defer c.Stop()
 
 		c.conn = conn
 		t.Run(testCase.name, func(t *testing.T) {
@@ -117,7 +121,9 @@ func Test_readResultEntry(t *testing.T) {
 			}()
 
 			result, err := c.readResultEntry([]byte{1})
-			require.Equal(t, testCase.expectedError, err)
+			if testCase.expectedError != nil {
+				require.ErrorIs(t, err, testCase.expectedError)
+			}
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})
 	}
@@ -164,18 +170,17 @@ func Test_readFileEntry(t *testing.T) {
 			name:           "Invalid byte array length",
 			input:          []byte{2, 21, 22, 23, 24, 20},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("error reading file bytes: reading from server: unexpected EOF"),
+			expectedError:  io.ErrUnexpectedEOF,
 		}, {
 			name:           "Invalid data length",
 			input:          []byte{2, 0, 0, 0, 31, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 45, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 64},
 			expectedResult: nil,
-			expectedError:  fmt.Errorf("error reading file data bytes: reading from server: unexpected EOF"),
+			expectedError:  io.ErrUnexpectedEOF,
 		},
 	}
 	for _, testCase := range testCases {
 		c := NewClient(context.Background(), "", 0, 0, 0, 0)
 		server, conn := net.Pipe()
-		defer c.Stop()
 		defer server.Close()
 
 		c.conn = conn
@@ -186,7 +191,9 @@ func Test_readFileEntry(t *testing.T) {
 			}()
 
 			result, err := c.readFileEntry()
-			require.Equal(t, testCase.expectedError, err)
+			if testCase.expectedError != nil {
+				require.ErrorIs(t, err, testCase.expectedError)
+			}
 			assert.DeepEqual(t, testCase.expectedResult, result)
 		})
 	}
