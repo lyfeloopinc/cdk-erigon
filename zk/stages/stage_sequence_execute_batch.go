@@ -24,16 +24,24 @@ func prepareBatchNumber(sdb *stageDb, forkId, lastBatch uint64, isL1Recovery boo
 			return 0, err
 		}
 
-		if len(blockNumbersInBatchSoFar) < len(recoveredBatchData.DecodedData) {
-			return lastBatch, nil
+		if len(blockNumbersInBatchSoFar) < len(recoveredBatchData.DecodedData) { // check if there are more blocks to process
+			isLastBatchBad, err := sdb.hermezDb.GetInvalidBatch(lastBatch)
+			if err != nil {
+				return 0, err
+			}
+
+			// if last batch is not bad then continue buildingin it, otherwise return lastBatch+1 (at the end of the function)
+			if !isLastBatchBad {
+				return lastBatch, nil
+			}
 		}
 	}
 
 	return lastBatch + 1, nil
 }
 
-func prepareBatchCounters(batchContext *BatchContext, batchState *BatchState, intermediateUsedCounters *vm.Counters) (*vm.BatchCounterCollector, error) {
-	return vm.NewBatchCounterCollector(batchContext.sdb.smt.GetDepth(), uint16(batchState.forkId), batchContext.cfg.zk.VirtualCountersSmtReduction, batchContext.cfg.zk.ShouldCountersBeUnlimited(batchState.isL1Recovery()), intermediateUsedCounters), nil
+func prepareBatchCounters(batchContext *BatchContext, batchState *BatchState) (*vm.BatchCounterCollector, error) {
+	return vm.NewBatchCounterCollector(batchContext.sdb.smt.GetDepth(), uint16(batchState.forkId), batchContext.cfg.zk.VirtualCountersSmtReduction, batchContext.cfg.zk.ShouldCountersBeUnlimited(batchState.isL1Recovery()), nil), nil
 }
 
 func doCheckForBadBatch(batchContext *BatchContext, batchState *BatchState, thisBlock uint64) (bool, error) {
@@ -62,7 +70,7 @@ func doCheckForBadBatch(batchContext *BatchContext, batchState *BatchState, this
 	if err = batchContext.sdb.hermezDb.WriteInvalidBatch(batchState.batchNumber); err != nil {
 		return false, err
 	}
-	if err = batchContext.sdb.hermezDb.WriteBatchCounters(currentBlock.NumberU64(), map[string]int{}); err != nil {
+	if err = batchContext.sdb.hermezDb.WriteBatchCounters(currentBlock.NumberU64(), []int{}); err != nil {
 		return false, err
 	}
 	if err = stages.SaveStageProgress(batchContext.sdb.tx, stages.HighestSeenBatchNumber, batchState.batchNumber); err != nil {
