@@ -105,6 +105,9 @@ func (api *PrivateDebugAPIImpl) traceBlock(ctx context.Context, blockNrOrHash rp
 
 	for idx, txn := range txns {
 		stream.WriteObjectStart()
+		stream.WriteObjectField("txHash")
+		stream.WriteString(txn.Hash().Hex())
+		stream.WriteMore()
 		stream.WriteObjectField("result")
 		select {
 		default:
@@ -301,7 +304,7 @@ func (api *PrivateDebugAPIImpl) TraceCallMany(ctx context.Context, bundles []Bun
 			return err
 		}
 
-		if _, _, err := core.ApplyTransaction_zkevm(chainConfig, api.engine(), evm, gp, st, state.NewNoopWriter(), parent, txn, nil, effectiveGasPricePercentage); err != nil {
+		if _, _, err := core.ApplyTransaction_zkevm(chainConfig, api.engine(), evm, gp, st, state.NewNoopWriter(), parent, txn, nil, effectiveGasPricePercentage, true); err != nil {
 			stream.WriteNil()
 			return err
 		}

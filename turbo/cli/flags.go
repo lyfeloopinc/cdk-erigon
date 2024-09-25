@@ -356,6 +356,11 @@ func setEmbeddedRpcDaemon(ctx *cli.Context, cfg *nodecfg.Config) {
 	apis := ctx.String(utils.HTTPApiFlag.Name)
 	log.Info("starting HTTP APIs", "APIs", apis)
 
+	wsEnabled := ctx.IsSet(utils.WSEnabledFlag.Name)
+	wsApis := strings.Split(ctx.String(utils.WSApiFlag.Name), ",")
+	if wsEnabled {
+		log.Info("starting WS APIs", "APIs", wsApis)
+	}
 	c := &httpcfg.HttpCfg{
 		Enabled: ctx.Bool(utils.HTTPEnabledFlag.Name),
 		Dirs:    cfg.Dirs,
@@ -387,24 +392,31 @@ func setEmbeddedRpcDaemon(ctx *cli.Context, cfg *nodecfg.Config) {
 		},
 		EvmCallTimeout: ctx.Duration(EvmCallTimeoutFlag.Name),
 
-		WebsocketEnabled:     ctx.IsSet(utils.WSEnabledFlag.Name),
-		RpcBatchConcurrency:  ctx.Uint(utils.RpcBatchConcurrencyFlag.Name),
-		RpcStreamingDisable:  ctx.Bool(utils.RpcStreamingDisableFlag.Name),
-		DBReadConcurrency:    ctx.Int(utils.DBReadConcurrencyFlag.Name),
-		RpcAllowListFilePath: ctx.String(utils.RpcAccessListFlag.Name),
-		Gascap:               ctx.Uint64(utils.RpcGasCapFlag.Name),
-		MaxTraces:            ctx.Uint64(utils.TraceMaxtracesFlag.Name),
-		TraceCompatibility:   ctx.Bool(utils.RpcTraceCompatFlag.Name),
-		BatchLimit:           ctx.Int(utils.RpcBatchLimit.Name),
-		ReturnDataLimit:      ctx.Int(utils.RpcReturnDataLimit.Name),
+		WebsocketEnabled:       wsEnabled,
+		WebSocketListenAddress: ctx.String(utils.WSListenAddrFlag.Name),
+		WebSocketPort:          ctx.Int(utils.WSPortFlag.Name),
+		WebsocketCORSDomain:    strings.Split(ctx.String(utils.WSAllowedOriginsFlag.Name), ","),
+		WebSocketApi:           wsApis,
+		RpcBatchConcurrency:    ctx.Uint(utils.RpcBatchConcurrencyFlag.Name),
+		RpcStreamingDisable:    ctx.Bool(utils.RpcStreamingDisableFlag.Name),
+		DBReadConcurrency:      ctx.Int(utils.DBReadConcurrencyFlag.Name),
+		RpcAllowListFilePath:   ctx.String(utils.RpcAccessListFlag.Name),
+		Gascap:                 ctx.Uint64(utils.RpcGasCapFlag.Name),
+		MaxTraces:              ctx.Uint64(utils.TraceMaxtracesFlag.Name),
+		TraceCompatibility:     ctx.Bool(utils.RpcTraceCompatFlag.Name),
+		BatchLimit:             ctx.Int(utils.RpcBatchLimit.Name),
+		ReturnDataLimit:        ctx.Int(utils.RpcReturnDataLimit.Name),
 
 		TxPoolApiAddr: ctx.String(utils.TxpoolApiAddrFlag.Name),
 
 		StateCache: kvcache.DefaultCoherentConfig,
 
-		DataStreamPort: ctx.Int(utils.DataStreamPort.Name),
-		DataStreamHost: ctx.String(utils.DataStreamHost.Name),
-		L2RpcUrl:       ctx.String(utils.L2RpcUrlFlag.Name),
+		DataStreamPort:                    ctx.Int(utils.DataStreamPort.Name),
+		DataStreamHost:                    ctx.String(utils.DataStreamHost.Name),
+		DataStreamWriteTimeout:            ctx.Duration(utils.DataStreamWriteTimeout.Name),
+		DataStreamInactivityTimeout:       ctx.Duration(utils.DataStreamInactivityTimeout.Name),
+		DataStreamInactivityCheckInterval: ctx.Duration(utils.DataStreamInactivityCheckInterval.Name),
+		L2RpcUrl:                          ctx.String(utils.L2RpcUrlFlag.Name),
 	}
 	if ctx.IsSet(utils.HttpCompressionFlag.Name) {
 		c.HttpCompression = ctx.Bool(utils.HttpCompressionFlag.Name)

@@ -3,6 +3,7 @@ package stages
 import (
 	"context"
 	"fmt"
+
 	"github.com/0xPolygonHermez/zkevm-data-streamer/datastreamer"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/core/rawdb"
@@ -10,8 +11,8 @@ import (
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
 	"github.com/ledgerwatch/erigon/zk/datastream/server"
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
-	"github.com/ledgerwatch/log/v3"
 	"github.com/ledgerwatch/erigon/zk/sequencer"
+	"github.com/ledgerwatch/log/v3"
 )
 
 type DataStreamCatchupCfg struct {
@@ -19,14 +20,16 @@ type DataStreamCatchupCfg struct {
 	stream        *datastreamer.StreamServer
 	chainId       uint64
 	streamVersion int
+	hasExecutors  bool
 }
 
-func StageDataStreamCatchupCfg(stream *datastreamer.StreamServer, db kv.RwDB, chainId uint64, streamVersion int) DataStreamCatchupCfg {
+func StageDataStreamCatchupCfg(stream *datastreamer.StreamServer, db kv.RwDB, chainId uint64, streamVersion int, hasExecutors bool) DataStreamCatchupCfg {
 	return DataStreamCatchupCfg{
 		stream:        stream,
 		db:            db,
 		chainId:       chainId,
 		streamVersion: streamVersion,
+		hasExecutors:  hasExecutors,
 	}
 }
 
@@ -58,7 +61,7 @@ func SpawnStageDataStreamCatchup(
 		createdTx = true
 	}
 
-	finalBlockNumber, err := CatchupDatastream(logPrefix, tx, stream, cfg.chainId, cfg.streamVersion)
+	finalBlockNumber, err := CatchupDatastream(ctx, logPrefix, tx, stream, cfg.chainId)
 	if err != nil {
 		return err
 	}
@@ -74,22 +77,28 @@ func SpawnStageDataStreamCatchup(
 	return err
 }
 
-func CatchupDatastream(logPrefix string, tx kv.RwTx, stream *datastreamer.StreamServer, chainId uint64, streamVersion int) (uint64, error) {
+func CatchupDatastream(ctx context.Context, logPrefix string, tx kv.RwTx, stream *datastreamer.StreamServer, chainId uint64) (uint64, error) {
 	srv := server.NewDataStreamServer(stream, chainId)
 	reader := hermez_db.NewHermezDbReader(tx)
 
-	// get the latest verified batch number
-	var err error
-	var latestBatch uint64
-	var finalBlockNumber uint64
+	var (
+		err              error
+		finalBlockNumber uint64
+	)
+
 	if sequencer.IsSequencer() {
-		latestBatch, err = stages.GetStageProgress(tx, stages.SequenceExecutorVerify)
+		finalBlockNumber, err = stages.GetStageProgress(tx, stages.DataStream)
 		if err != nil {
 			return 0, err
 		}
-		finalBlockNumber, err = reader.GetHighestBlockInBatch(latestBatch)
-		if err != nil {
-			return 0, err
+
+		// this handles a case where the node was synced in RPC mode without a datastream
+		// in this case the datastream progress will be 0 but it still should catch up
+		if finalBlockNumber == 0 {
+			finalBlockNumber, err = stages.GetStageProgress(tx, stages.Execution)
+			if err != nil {
+				return 0, err
+			}
 		}
 	} else {
 		finalBlockNumber, err = stages.GetStageProgress(tx, stages.Execution)
@@ -98,7 +107,7 @@ func CatchupDatastream(logPrefix string, tx kv.RwTx, stream *datastreamer.Stream
 		}
 	}
 
-	previousProgress, err := stages.GetStageProgress(tx, stages.DataStream)
+	previousProgress, err := srv.GetHighestBlockNumber()
 	if err != nil {
 		return 0, err
 	}
@@ -119,13 +128,13 @@ func CatchupDatastream(logPrefix string, tx kv.RwTx, stream *datastreamer.Stream
 			if err != nil {
 				return 0, err
 			}
-			if err = server.WriteGenesisToStream(genesis, reader, tx, stream, srv, chainId); err != nil {
+			if err = srv.WriteGenesisToStream(genesis, reader, tx); err != nil {
 				return 0, err
 			}
 		}
 	}
 
-	if err = server.WriteBlocksToStream(tx, reader, srv, stream, previousProgress+1, finalBlockNumber, logPrefix); err != nil {
+	if err = srv.WriteBlocksToStreamConsecutively(ctx, logPrefix, tx, reader, previousProgress+1, finalBlockNumber); err != nil {
 		return 0, err
 	}
 

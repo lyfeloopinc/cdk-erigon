@@ -1,20 +1,21 @@
 package stages
 
 import (
-	"github.com/gateway-fm/cdk-erigon-lib/kv"
-	"github.com/ledgerwatch/erigon/eth/ethconfig"
-	"github.com/ledgerwatch/erigon/eth/stagedsync"
-	"fmt"
-	"github.com/ledgerwatch/log/v3"
 	"context"
-	"github.com/ledgerwatch/erigon/zk/hermez_db"
-	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
-	"github.com/ledgerwatch/erigon/core/types"
-	"github.com/ledgerwatch/erigon/zk/contracts"
+	"fmt"
 	"sort"
 	"time"
-	"github.com/ledgerwatch/erigon/zk/l1infotree"
+
 	"github.com/gateway-fm/cdk-erigon-lib/common"
+	"github.com/gateway-fm/cdk-erigon-lib/kv"
+	"github.com/ledgerwatch/erigon/core/types"
+	"github.com/ledgerwatch/erigon/eth/ethconfig"
+	"github.com/ledgerwatch/erigon/eth/stagedsync"
+	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
+	"github.com/ledgerwatch/erigon/zk/contracts"
+	"github.com/ledgerwatch/erigon/zk/hermez_db"
+	"github.com/ledgerwatch/erigon/zk/l1infotree"
+	"github.com/ledgerwatch/log/v3"
 )
 
 type L1InfoTreeCfg struct {
@@ -37,15 +38,15 @@ func SpawnL1InfoTreeStage(
 	tx kv.RwTx,
 	cfg L1InfoTreeCfg,
 	ctx context.Context,
-	initialCycle bool,
 	quiet bool,
-) (err error) {
+) (funcErr error) {
 	logPrefix := s.LogPrefix()
 	log.Info(fmt.Sprintf("[%s] Starting L1 Info Tree stage", logPrefix))
 	defer log.Info(fmt.Sprintf("[%s] Finished L1 Info Tree stage", logPrefix))
 
 	freshTx := tx == nil
 	if freshTx {
+		var err error
 		tx, err = cfg.db.BeginRw(ctx)
 		if err != nil {
 			return err
@@ -63,13 +64,20 @@ func SpawnL1InfoTreeStage(
 		progress = cfg.zkCfg.L1FirstBlock - 1
 	}
 
-	latestUpdate, found, err := hermezDb.GetLatestL1InfoTreeUpdate()
+	latestUpdate, _, err := hermezDb.GetLatestL1InfoTreeUpdate()
 	if err != nil {
 		return err
 	}
 
 	if !cfg.syncer.IsSyncStarted() {
-		cfg.syncer.Run(progress)
+		cfg.syncer.RunQueryBlocks(progress)
+		defer func() {
+			if funcErr != nil {
+				cfg.syncer.StopQueryBlocks()
+				cfg.syncer.ConsumeQueryBlocks()
+				cfg.syncer.WaitQueryBlocksToFinish()
+			}
+		}()
 	}
 
 	logChan := cfg.syncer.GetLogsChan()
@@ -88,6 +96,7 @@ LOOP:
 			if !cfg.syncer.IsDownloading() {
 				break LOOP
 			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
@@ -95,12 +104,14 @@ LOOP:
 	sort.Slice(allLogs, func(i, j int) bool {
 		l1 := allLogs[i]
 		l2 := allLogs[j]
-		if l1.BlockNumber == l2.BlockNumber {
-			// sort by index in the case of a matching block number
+		// first sort by block number and if equal then by tx index
+		if l1.BlockNumber != l2.BlockNumber {
+			return l1.BlockNumber < l2.BlockNumber
+		}
+		if l1.TxIndex != l2.TxIndex {
 			return l1.TxIndex < l2.TxIndex
 		}
-		// otherwise sort by block number
-		return l1.BlockNumber < l2.BlockNumber
+		return l1.Index < l2.Index
 	})
 
 	// chunk the logs into batches, so we don't overload the RPC endpoints too much at once
@@ -110,8 +121,11 @@ LOOP:
 	defer ticker.Stop()
 	processed := 0
 
-	var tree *l1infotree.L1InfoTree
-	treeInitialised := false
+	tree, err := initialiseL1InfoTree(hermezDb)
+	if err != nil {
+		funcErr = err
+		return funcErr
+	}
 
 	// process the logs in chunks
 	for _, chunk := range chunks {
@@ -123,43 +137,60 @@ LOOP:
 
 		headersMap, err := cfg.syncer.L1QueryHeaders(chunk)
 		if err != nil {
-			return err
+			funcErr = err
+			return funcErr
 		}
 
 		for _, l := range chunk {
-			header := headersMap[l.BlockNumber]
 			switch l.Topics[0] {
 			case contracts.UpdateL1InfoTreeTopic:
-				if !treeInitialised {
-					tree, err = initialiseL1InfoTree(hermezDb)
-					if err != nil {
-						return err
+				header := headersMap[l.BlockNumber]
+				if header == nil {
+					header, funcErr = cfg.syncer.GetHeader(l.BlockNumber)
+					if funcErr != nil {
+						return funcErr
 					}
-					treeInitialised = true
 				}
 
-				latestUpdate, err = HandleL1InfoTreeUpdate(cfg.syncer, hermezDb, l, latestUpdate, found, header)
+				tmpUpdate, err := CreateL1InfoTreeUpdate(l, header)
 				if err != nil {
-					return err
+					funcErr = err
+					return funcErr
 				}
-				found = true
 
-				leafHash := l1infotree.HashLeafData(latestUpdate.GER, latestUpdate.ParentHash, latestUpdate.Timestamp)
-
-				err = hermezDb.WriteL1InfoTreeLeaf(latestUpdate.Index, leafHash)
-				if err != nil {
-					return err
+				leafHash := l1infotree.HashLeafData(tmpUpdate.GER, tmpUpdate.ParentHash, tmpUpdate.Timestamp)
+				if tree.LeafExists(leafHash) {
+					log.Warn("Skipping log as L1 Info Tree leaf already exists", "hash", leafHash)
+					continue
 				}
+
+				if latestUpdate != nil {
+					tmpUpdate.Index = latestUpdate.Index + 1
+				} // if latestUpdate is nil then Index = 0 which is the default value so no need to set it
+				latestUpdate = tmpUpdate
 
 				newRoot, err := tree.AddLeaf(uint32(latestUpdate.Index), leafHash)
 				if err != nil {
-					return err
+					funcErr = err
+					return funcErr
 				}
-				log.Trace("New L1 Index", "index", latestUpdate.Index, "root", newRoot.String())
+				log.Debug("New L1 Index",
+					"index", latestUpdate.Index,
+					"root", newRoot.String(),
+					"mainnet", latestUpdate.MainnetExitRoot.String(),
+					"rollup", latestUpdate.RollupExitRoot.String(),
+					"ger", latestUpdate.GER.String(),
+					"parent", latestUpdate.ParentHash.String(),
+				)
 
-				err = hermezDb.WriteL1InfoTreeRoot(common.BytesToHash(newRoot[:]), latestUpdate.Index)
-				if err != nil {
-					return err
+				if funcErr = HandleL1InfoTreeUpdate(hermezDb, latestUpdate); funcErr != nil {
+					return funcErr
+				}
+				if funcErr = hermezDb.WriteL1InfoTreeLeaf(latestUpdate.Index, leafHash); funcErr != nil {
+					return funcErr
+				}
+				if funcErr = hermezDb.WriteL1InfoTreeRoot(common.BytesToHash(newRoot[:]), latestUpdate.Index); funcErr != nil {
+					return funcErr
 				}
 
 				processed++
@@ -173,15 +204,15 @@ LOOP:
 	if len(allLogs) > 0 {
 		progress = allLogs[len(allLogs)-1].BlockNumber + 1
 	}
-	if err := stages.SaveStageProgress(tx, stages.L1InfoTree, progress); err != nil {
-		return err
+	if funcErr = stages.SaveStageProgress(tx, stages.L1InfoTree, progress); funcErr != nil {
+		return funcErr
 	}
 
 	log.Info(fmt.Sprintf("[%s] Info tree updates", logPrefix), "count", len(allLogs))
 
 	if freshTx {
-		if err := tx.Commit(); err != nil {
-			return err
+		if funcErr = tx.Commit(); funcErr != nil {
+			return funcErr
 		}
 	}
 

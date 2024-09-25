@@ -10,8 +10,6 @@ import (
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
 )
 
-var totalSteps = 1 << 23
-
 const (
 	MCPL    = 23
 	fnecHex = "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141"
@@ -69,30 +67,53 @@ func (c *Counter) AsMap() map[string]int {
 	}
 }
 
-type Counters map[CounterKey]*Counter
+type Counters []*Counter
+
+func NewCounters() Counters {
+	array := make(Counters, CounterTypesCount)
+	return array
+}
+
+func NewCountersFromUsedArray(used []int) *Counters {
+	res := Counters{}
+	for k, v := range used {
+		res[k] = &Counter{used: v}
+	}
+	return &res
+}
 
 func (c Counters) UsedAsString() string {
-	res := fmt.Sprintf("[SHA: %v]", c[SHA].used)
-	res += fmt.Sprintf("[A: %v]", c[A].used)
-	res += fmt.Sprintf("[B: %v]", c[B].used)
-	res += fmt.Sprintf("[K: %v]", c[K].used)
-	res += fmt.Sprintf("[M: %v]", c[M].used)
-	res += fmt.Sprintf("[P: %v]", c[P].used)
-	res += fmt.Sprintf("[S: %v]", c[S].used)
-	res += fmt.Sprintf("[D: %v]", c[D].used)
+	res := fmt.Sprintf("[%s: %v]", CounterKeyNames[SHA], c[SHA].used)
+	res += fmt.Sprintf("[%s: %v]", CounterKeyNames[A], c[A].used)
+	res += fmt.Sprintf("[%s: %v]", CounterKeyNames[B], c[B].used)
+	res += fmt.Sprintf("[%s: %v]", CounterKeyNames[K], c[K].used)
+	res += fmt.Sprintf("[%s: %v]", CounterKeyNames[M], c[M].used)
+	res += fmt.Sprintf("[%s: %v]", CounterKeyNames[P], c[P].used)
+	res += fmt.Sprintf("[%s: %v]", CounterKeyNames[S], c[S].used)
+	res += fmt.Sprintf("[%s: %v]", CounterKeyNames[D], c[D].used)
 	return res
+}
+
+func (c Counters) UsedAsArray() []int {
+	array := make([]int, len(c))
+
+	for i, v := range c {
+		array[i] = v.used
+	}
+
+	return array
 }
 
 func (c Counters) UsedAsMap() map[string]int {
 	return map[string]int{
-		"SHA": c[SHA].used,
-		"A":   c[A].used,
-		"B":   c[B].used,
-		"K":   c[K].used,
-		"M":   c[M].used,
-		"P":   c[P].used,
-		"S":   c[S].used,
-		"D":   c[D].used,
+		string(CounterKeyNames[S]):   c[S].used,
+		string(CounterKeyNames[A]):   c[A].used,
+		string(CounterKeyNames[B]):   c[B].used,
+		string(CounterKeyNames[M]):   c[M].used,
+		string(CounterKeyNames[K]):   c[K].used,
+		string(CounterKeyNames[D]):   c[D].used,
+		string(CounterKeyNames[P]):   c[P].used,
+		string(CounterKeyNames[SHA]): c[SHA].used,
 	}
 }
 
@@ -128,17 +149,35 @@ func (c *Counters) GetPoseidonPaddings() *Counter {
 	return (*c)[D]
 }
 
-type CounterKey string
+func (cc Counters) Clone() Counters {
+	var clonedCounters Counters = Counters{}
+
+	for k, v := range cc {
+		clonedCounters[k] = v.Clone()
+	}
+
+	return clonedCounters
+}
+
+type CounterKey int
+type CounterName string
+
+const (
+	S   CounterKey = 0
+	A   CounterKey = 1
+	B   CounterKey = 2
+	M   CounterKey = 3
+	K   CounterKey = 4
+	D   CounterKey = 5
+	P   CounterKey = 6
+	SHA CounterKey = 7
+
+	CounterTypesCount = 8
+)
 
 var (
-	S   CounterKey = "S"
-	A   CounterKey = "A"
-	B   CounterKey = "B"
-	M   CounterKey = "M"
-	K   CounterKey = "K"
-	D   CounterKey = "D"
-	P   CounterKey = "P"
-	SHA CounterKey = "SHA"
+	// important!!! must match the indexes of the keys
+	CounterKeyNames = []CounterName{"S", "A", "B", "M", "K", "D", "P", "SHA"}
 )
 
 type CounterCollector struct {
@@ -146,6 +185,15 @@ type CounterCollector struct {
 	smtLevels   int
 	isDeploy    bool
 	transaction types.Transaction
+}
+
+func (cc *CounterCollector) isOverflown() bool {
+	for _, v := range cc.counters {
+		if v.remaining < 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func calculateSmtLevels(smtMaxLevel int, minValue int, mcpReduction float64) int {
@@ -169,14 +217,14 @@ func calculateSmtLevels(smtMaxLevel int, minValue int, mcpReduction float64) int
 
 func NewUnlimitedCounterCollector() *CounterCollector {
 	return &CounterCollector{
-		counters:  unlimitedCounters(),
+		counters:  *createCountrsByLimits(unlimitedCounters),
 		smtLevels: 256,
 	}
 }
 
-func NewCounterCollector(smtLevels int) *CounterCollector {
+func NewCounterCollector(smtLevels int, forkId uint16) *CounterCollector {
 	return &CounterCollector{
-		counters:  defaultCounters(),
+		counters:  *getCounterLimits(forkId),
 		smtLevels: smtLevels,
 	}
 }
@@ -205,96 +253,6 @@ func (cc *CounterCollector) Deduct(key CounterKey, amount int) {
 	cc.counters[key].remaining -= amount
 }
 
-func defaultCounters() Counters {
-	return Counters{
-		S: {
-			remaining:     totalSteps,
-			name:          "totalSteps",
-			initialAmount: totalSteps,
-		},
-		A: {
-			remaining:     totalSteps >> 5,
-			name:          "arith",
-			initialAmount: totalSteps >> 5,
-		},
-		B: {
-			remaining:     totalSteps >> 4,
-			name:          "binary",
-			initialAmount: totalSteps >> 4,
-		},
-		M: {
-			remaining:     totalSteps >> 5,
-			name:          "memAlign",
-			initialAmount: totalSteps >> 5,
-		},
-		K: {
-			remaining:     totalSteps / 155286 * 44, //int(math.Floor(float64(totalSteps)/155286) * 44)
-			name:          "keccaks",
-			initialAmount: totalSteps / 155286 * 44, //int(math.Floor(float64(totalSteps)/155286) * 44)
-		},
-		D: {
-			remaining:     totalSteps / 56, //int(math.Floor(float64(totalSteps) / 56))
-			name:          "padding",
-			initialAmount: totalSteps / 56, //int(math.Floor(float64(totalSteps) / 56))
-		},
-		P: {
-			remaining:     totalSteps / 30, //int(math.Floor(float64(totalSteps) / 30))
-			name:          "poseidon",
-			initialAmount: totalSteps / 30, //int(math.Floor(float64(totalSteps) / 30))
-		},
-		SHA: {
-			remaining:     (totalSteps - 1) / 31488 * 7, //int(math.Floor(float64(totalSteps-1)/31488)) * 7
-			name:          "sha256",
-			initialAmount: (totalSteps - 1) / 31488 * 7, //int(math.Floor(float64(totalSteps-1)/31488)) * 7
-		},
-	}
-}
-
-func unlimitedCounters() Counters {
-	return Counters{
-		S: {
-			remaining:     math.MaxInt32,
-			name:          "totalSteps",
-			initialAmount: math.MaxInt32,
-		},
-		A: {
-			remaining:     math.MaxInt32,
-			name:          "arith",
-			initialAmount: math.MaxInt32,
-		},
-		B: {
-			remaining:     math.MaxInt32,
-			name:          "binary",
-			initialAmount: math.MaxInt32,
-		},
-		M: {
-			remaining:     math.MaxInt32,
-			name:          "memAlign",
-			initialAmount: math.MaxInt32,
-		},
-		K: {
-			remaining:     math.MaxInt32,
-			name:          "keccaks",
-			initialAmount: math.MaxInt32,
-		},
-		D: {
-			remaining:     math.MaxInt32,
-			name:          "padding",
-			initialAmount: math.MaxInt32,
-		},
-		P: {
-			remaining:     math.MaxInt32,
-			name:          "poseidon",
-			initialAmount: math.MaxInt32,
-		},
-		SHA: {
-			remaining:     math.MaxInt32,
-			name:          "sha256",
-			initialAmount: math.MaxInt32,
-		},
-	}
-}
-
 func (cc *CounterCollector) Counters() Counters {
 	return cc.counters
 }
@@ -307,9 +265,8 @@ func (cc *CounterCollector) SetTransaction(transaction types.Transaction) {
 func WrapJumpTableWithZkCounters(originalTable *JumpTable, counterCalls *[256]executionFunc) *JumpTable {
 	wrapper := func(original, counter executionFunc) executionFunc {
 		return func(p *uint64, i *EVMInterpreter, s *ScopeContext) ([]byte, error) {
-			b, err := counter(p, i, s)
-			if err != nil {
-				return b, err
+			if _, err := counter(p, i, s); err != nil {
+				return nil, err
 			}
 			return original(p, i, s)
 		}
@@ -413,7 +370,6 @@ func SimpleCounterOperations(cc *CounterCollector) *[256]executionFunc {
 		CREATE2:        cc.opCreate2,
 		RETURN:         cc.opReturn,
 		REVERT:         cc.opRevert,
-		SENDALL:        cc.opSendAll,
 		SELFDESTRUCT:   cc.opSendAll,
 		INVALID:        cc.opInvalid,
 		ADDRESS:        cc.opAddress,
@@ -646,7 +602,7 @@ func (cc *CounterCollector) finishBatchProcessing() {
 	cc.Deduct(S, 200)
 	cc.Deduct(K, 2)
 	cc.Deduct(P, cc.smtLevels)
-	cc.Deduct(B, 1)
+	cc.Deduct(B, 2)
 }
 
 func (cc *CounterCollector) isColdAddress() {
@@ -776,6 +732,7 @@ func (cc *CounterCollector) setupNewBlockInfoTree() {
 
 func (cc *CounterCollector) verifyMerkleProof() {
 	cc.Deduct(S, 250)
+	cc.Deduct(B, 1)
 	cc.Deduct(K, 33)
 }
 
@@ -830,9 +787,9 @@ func (cc *CounterCollector) decodeChangeL2BlockTx() {
 }
 
 func (cc *CounterCollector) ecAdd() {
-	cc.Deduct(S, 323)
-	cc.Deduct(B, 33)
-	cc.Deduct(A, 40)
+	cc.Deduct(S, 800)
+	cc.Deduct(B, 50)
+	cc.Deduct(A, 50)
 }
 
 func (cc *CounterCollector) preECMul() {
@@ -845,9 +802,9 @@ func (cc *CounterCollector) preECMul() {
 }
 
 func (cc *CounterCollector) ecMul() {
-	cc.Deduct(S, 162890)
-	cc.Deduct(B, 16395)
-	cc.Deduct(A, 19161)
+	cc.Deduct(S, 175000)
+	cc.Deduct(B, 20000)
+	cc.Deduct(A, 20000)
 }
 
 func (cc *CounterCollector) preECPairing(inputsCount int) {
@@ -861,9 +818,9 @@ func (cc *CounterCollector) preECPairing(inputsCount int) {
 }
 
 func (cc *CounterCollector) ecPairing(inputsCount int) {
-	cc.Deduct(S, 16+inputsCount*184017+171253)
-	cc.Deduct(B, inputsCount*3986+650)
-	cc.Deduct(A, inputsCount*13694+15411)
+	cc.Deduct(S, 16+inputsCount*200000+175000)
+	cc.Deduct(B, inputsCount*4100+750)
+	cc.Deduct(A, inputsCount*15000+17500)
 }
 
 func (cc *CounterCollector) preModExp(callDataLength, returnDataLength, bLen, mLen, eLen int, base, exponent, modulus *big.Int) {
@@ -905,6 +862,15 @@ func (cc *CounterCollector) preModExpLoop() {
 
 func (cc *CounterCollector) multiCall(call func(), times int) {
 	for i := 0; i < times; i++ {
+		// if there is a case with a huge amount ot iterations
+		// it will overflow after several thousand iterations
+		// so we can just stop it early and not hang the node
+		// check each 1000 itearations so the overhead is not too much in the normal case
+		if i%1000 == 0 {
+			if cc.isOverflown() {
+				break
+			}
+		}
 		call()
 	}
 }
@@ -912,7 +878,7 @@ func (cc *CounterCollector) multiCall(call func(), times int) {
 func (cc *CounterCollector) preSha256(callDataLength int) {
 	cc.Deduct(S, 100)
 	cc.Deduct(B, 1)
-	cc.Deduct(SHA, int(math.Ceil(float64(callDataLength+1)/64)))
+	cc.Deduct(SHA, int(math.Ceil(float64(callDataLength+8)/64)))
 	cc.multiCall(cc.divArith, 2)
 	cc.mStore32()
 	cc.mStoreX()

@@ -51,7 +51,8 @@ type DebuggableDB interface {
 }
 
 type SMT struct {
-	Db DB
+	noSaveOnInsert bool
+	Db             DB
 	*RoSMT
 }
 
@@ -65,14 +66,15 @@ type SMTResponse struct {
 	Mode          string
 }
 
-func NewSMT(database DB) *SMT {
+func NewSMT(database DB, noSaveOnInsert bool) *SMT {
 	if database == nil {
 		database = db.NewMemDb()
 	}
 
 	return &SMT{
-		Db:    database,
-		RoSMT: NewRoSMT(database),
+		noSaveOnInsert: noSaveOnInsert,
+		Db:             database,
+		RoSMT:          NewRoSMT(database),
 	}
 }
 
@@ -168,11 +170,7 @@ func (s *SMT) InsertStorage(ethAddr string, storage *map[string]string, chm *map
 		NewRootScalar: &or,
 	}
 	for k := range *storage {
-		keyStoragePosition, err := utils.KeyContractStorage(add, k)
-		if err != nil {
-			return nil, err
-		}
-
+		keyStoragePosition := utils.KeyContractStorage(add, k)
 		smtr, err = s.insert(keyStoragePosition, *(*chm)[k], (*vhm)[k], *smtr.NewRootScalar)
 		if err != nil {
 			return nil, err
@@ -259,9 +257,6 @@ func (s *SMT) insert(k utils.NodeKey, v utils.NodeValue8, newValH [4]uint64, old
 			foundVal = foundValA
 
 			foundKey = utils.JoinKey(usedKey, foundRKey)
-			if err != nil {
-				return nil, err
-			}
 		} else {
 			oldRoot = utils.NodeKeyFromBigIntArray(siblings[level][keys[level]*4 : keys[level]*4+4])
 			usedKey = append(usedKey, keys[level])
@@ -292,7 +287,7 @@ func (s *SMT) insert(k utils.NodeKey, v utils.NodeValue8, newValH [4]uint64, old
 				if newValH == [4]uint64{} {
 					newValH, err = s.hashcalcAndSave(v.ToUintArray(), utils.BranchCapacity)
 				} else {
-					newValH, err = s.hashSave(v.ToUintArray(), utils.BranchCapacity, newValH)
+					err = s.hashSave(v.ToUintArray(), utils.BranchCapacity, newValH)
 				}
 				if err != nil {
 					return nil, err
@@ -340,7 +335,7 @@ func (s *SMT) insert(k utils.NodeKey, v utils.NodeValue8, newValH [4]uint64, old
 				if newValH == [4]uint64{} {
 					newValH, err = s.hashcalcAndSave(v.ToUintArray(), utils.BranchCapacity)
 				} else {
-					newValH, err = s.hashSave(v.ToUintArray(), utils.BranchCapacity, newValH)
+					err = s.hashSave(v.ToUintArray(), utils.BranchCapacity, newValH)
 				}
 
 				if err != nil {
@@ -405,7 +400,7 @@ func (s *SMT) insert(k utils.NodeKey, v utils.NodeValue8, newValH [4]uint64, old
 			if newValH == [4]uint64{} {
 				newValH, err = s.hashcalcAndSave(v.ToUintArray(), utils.BranchCapacity)
 			} else {
-				newValH, err = s.hashSave(v.ToUintArray(), utils.BranchCapacity, newValH)
+				err = s.hashSave(v.ToUintArray(), utils.BranchCapacity, newValH)
 			}
 			if err != nil {
 				return nil, err
@@ -535,33 +530,29 @@ func (s *SMT) insert(k utils.NodeKey, v utils.NodeValue8, newValH [4]uint64, old
 	return smtResponse, nil
 }
 
-func (s *SMT) hashSave(in [8]uint64, capacity, h [4]uint64) ([4]uint64, error) {
-	var sl []uint64
-	sl = append(sl, in[:]...)
-	sl = append(sl, capacity[:]...)
-
-	v := utils.NodeValue12{}
-	for i, val := range sl {
-		b := new(big.Int)
-		v[i] = b.SetUint64(val)
+// used only by old smt (not by smt batch/create)
+func (s *SMT) hashSave(in [8]uint64, capacity, h [4]uint64) error {
+	if s.noSaveOnInsert {
+		return nil
 	}
+	v := utils.ConcatArrays8AndCapacityByPointers(&in, &capacity)
 
-	err := s.Db.Insert(h, v)
-
-	return h, err
+	return s.Db.Insert(h, *v)
 }
 
+func (s *SMT) hashSaveByPointers(in *[8]uint64, capacity, h *[4]uint64) error {
+	if s.noSaveOnInsert {
+		return nil
+	}
+	v := utils.ConcatArrays8AndCapacityByPointers(in, capacity)
+
+	return s.Db.Insert(*h, *v)
+}
+
+// used only by old smt (not by smt batch/create)
 func (s *SMT) hashcalcAndSave(in [8]uint64, capacity [4]uint64) ([4]uint64, error) {
-	h, err := utils.Hash(in, capacity)
-	if err != nil {
-		return [4]uint64{}, err
-	}
-
-	return s.hashSave(in, capacity, h)
-}
-
-func (s *SMT) hashcalc(in [8]uint64, capacity [4]uint64) ([4]uint64, error) {
-	return utils.Hash(in, capacity)
+	h := utils.Hash(in, capacity)
+	return h, s.hashSave(in, capacity, h)
 }
 
 func (s *RoSMT) getLastRoot() (utils.NodeKey, error) {

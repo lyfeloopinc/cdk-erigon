@@ -280,7 +280,7 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 		}
 	}
 
-	batchCollector := vm.NewBatchCounterCollector(test.SmtDepths[0], uint16(test.ForkId), 0.6, false)
+	batchCollector := vm.NewBatchCounterCollector(test.SmtDepths[0], uint16(test.ForkId), 0.6, false, nil)
 
 	blockStarted := false
 	for i, block := range decodedBlocks {
@@ -299,7 +299,7 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 				}
 				blockStarted = true
 			}
-			txCounters := vm.NewTransactionCounter(transaction, test.SmtDepths[i], 0.6, false)
+			txCounters := vm.NewTransactionCounter(transaction, test.SmtDepths[i], uint16(test.ForkId), 0.6, false)
 			overflow, err := batchCollector.AddNewTransactionCounters(txCounters)
 			if err != nil {
 				t.Fatal(err)
@@ -322,6 +322,7 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 				transaction,
 				&header.GasUsed,
 				zktypes.EFFECTIVE_GAS_PRICE_PERCENTAGE_MAXIMUM,
+				true,
 			)
 
 			if err != nil {
@@ -336,6 +337,8 @@ func runTest(t *testing.T, test vector, err error, fileName string, idx int) {
 			if err = txCounters.ProcessTx(ibs, result.ReturnData); err != nil {
 				t.Fatal(err)
 			}
+
+			batchCollector.UpdateExecutionAndProcessingCountersCache(txCounters)
 		}
 	}
 

@@ -2,7 +2,11 @@ package stages
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
+
+	"math/big"
 
 	"github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
@@ -37,15 +41,15 @@ func SpawnL1SequencerSyncStage(
 	tx kv.RwTx,
 	cfg L1SequencerSyncCfg,
 	ctx context.Context,
-	initialCycle bool,
 	quiet bool,
-) (err error) {
+) (funcErr error) {
 	logPrefix := s.LogPrefix()
 	log.Info(fmt.Sprintf("[%s] Starting L1 Sequencer sync stage", logPrefix))
 	defer log.Info(fmt.Sprintf("[%s] Finished L1 Sequencer sync stage", logPrefix))
 
 	freshTx := tx == nil
 	if freshTx {
+		var err error
 		tx, err = cfg.db.BeginRw(ctx)
 		if err != nil {
 			return err
@@ -63,12 +67,37 @@ func SpawnL1SequencerSyncStage(
 	}
 	if progress == 0 {
 		progress = cfg.zkCfg.L1FirstBlock - 1
+
+	}
+
+	// if the flag is set - wait for that block to be finalized on L1 before continuing
+	if progress <= cfg.zkCfg.L1FinalizedBlockRequirement && cfg.zkCfg.L1FinalizedBlockRequirement > 0 {
+		for {
+			finalized, finalizedBn, err := cfg.syncer.CheckL1BlockFinalized(cfg.zkCfg.L1FinalizedBlockRequirement)
+			if err != nil {
+				// we shouldn't just throw the error, because it could be a timeout, or "too many requests" error and we could jsut retry
+				log.Error(fmt.Sprintf("[%s] Error checking if L1 block %v is finalized: %v", logPrefix, cfg.zkCfg.L1FinalizedBlockRequirement, err))
+			}
+
+			if finalized {
+				break
+			}
+			log.Info(fmt.Sprintf("[%s] Waiting for L1 block %v to be correctly checked for \"finalized\" before continuing. Current finalized is %d", logPrefix, cfg.zkCfg.L1FinalizedBlockRequirement, finalizedBn))
+			time.Sleep(1 * time.Minute) // sleep could be even bigger since finalization takes more than 10 minutes
+		}
 	}
 
 	hermezDb := hermez_db.NewHermezDb(tx)
 
 	if !cfg.syncer.IsSyncStarted() {
-		cfg.syncer.Run(progress)
+		cfg.syncer.RunQueryBlocks(progress)
+		defer func() {
+			if funcErr != nil {
+				cfg.syncer.StopQueryBlocks()
+				cfg.syncer.ConsumeQueryBlocks()
+				cfg.syncer.WaitQueryBlocksToFinish()
+			}
+		}()
 	}
 
 	logChan := cfg.syncer.GetLogsChan()
@@ -80,19 +109,63 @@ Loop:
 		case logs := <-logChan:
 			headersMap, err := cfg.syncer.L1QueryHeaders(logs)
 			if err != nil {
-				return err
+				funcErr = err
+				return funcErr
 			}
 
 			for _, l := range logs {
 				header := headersMap[l.BlockNumber]
 				switch l.Topics[0] {
 				case contracts.InitialSequenceBatchesTopic:
-					if err := HandleInitialSequenceBatches(cfg.syncer, hermezDb, l, header); err != nil {
-						return err
+					if funcErr = HandleInitialSequenceBatches(cfg.syncer, hermezDb, l, header); funcErr != nil {
+						return funcErr
 					}
-					// we only ever handle a single injected batch as a sequencer currently so we can just
-					// exit early here
-					break Loop
+				case contracts.AddNewRollupTypeTopic:
+					rollupType := l.Topics[1].Big().Uint64()
+					forkIdBytes := l.Data[64:96] // 3rd positioned item in the log data
+					forkId := new(big.Int).SetBytes(forkIdBytes).Uint64()
+					if funcErr = hermezDb.WriteRollupType(rollupType, forkId); funcErr != nil {
+						return funcErr
+					}
+				case contracts.CreateNewRollupTopic:
+					rollupId := l.Topics[1].Big().Uint64()
+					if rollupId != cfg.zkCfg.L1RollupId {
+						continue
+					}
+					rollupTypeBytes := l.Data[0:32]
+					rollupType := new(big.Int).SetBytes(rollupTypeBytes).Uint64()
+					fork, err := hermezDb.GetForkFromRollupType(rollupType)
+					if err != nil {
+						funcErr = err
+						return funcErr
+					}
+					if fork == 0 {
+						log.Error("received CreateNewRollupTopic for unknown rollup type", "rollupType", rollupType)
+					}
+					if funcErr = hermezDb.WriteNewForkHistory(fork, 0); funcErr != nil {
+						return funcErr
+					}
+				case contracts.UpdateRollupTopic:
+					rollupId := l.Topics[1].Big().Uint64()
+					if rollupId != cfg.zkCfg.L1RollupId {
+						continue
+					}
+					newRollupBytes := l.Data[0:32]
+					newRollup := new(big.Int).SetBytes(newRollupBytes).Uint64()
+					fork, err := hermezDb.GetForkFromRollupType(newRollup)
+					if err != nil {
+						funcErr = err
+						return funcErr
+					}
+					if fork == 0 {
+						funcErr = fmt.Errorf("received UpdateRollupTopic for unknown rollup type: %v", newRollup)
+						return funcErr
+					}
+					latestVerifiedBytes := l.Data[32:64]
+					latestVerified := new(big.Int).SetBytes(latestVerifiedBytes).Uint64()
+					if funcErr = hermezDb.WriteNewForkHistory(fork, latestVerified); funcErr != nil {
+						return funcErr
+					}
 				default:
 					log.Warn("received unexpected topic from l1 sequencer sync stage", "topic", l.Topics[0])
 				}
@@ -103,43 +176,37 @@ Loop:
 			if !cfg.syncer.IsDownloading() {
 				break Loop
 			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
-
-	cfg.syncer.Stop()
 
 	progress = cfg.syncer.GetLastCheckedL1Block()
 	if progress >= cfg.zkCfg.L1FirstBlock {
 		// do not save progress if progress less than L1FirstBlock
-		if err = stages.SaveStageProgress(tx, stages.L1SequencerSync, progress); err != nil {
-			return err
+		if funcErr = stages.SaveStageProgress(tx, stages.L1SequencerSync, progress); funcErr != nil {
+			return funcErr
 		}
 	}
 
 	log.Info(fmt.Sprintf("[%s] L1 Sequencer sync finished", logPrefix))
 
 	if freshTx {
-		if err = tx.Commit(); err != nil {
-			return err
+		if funcErr = tx.Commit(); funcErr != nil {
+			return funcErr
 		}
 	}
 
 	return nil
 }
 
-func HandleL1InfoTreeUpdate(
-	syncer IL1Syncer,
-	hermezDb *hermez_db.HermezDb,
-	l ethTypes.Log,
-	latestUpdate *types.L1InfoTreeUpdate,
-	found bool,
-	header *ethTypes.Header,
-) (*types.L1InfoTreeUpdate, error) {
+func CreateL1InfoTreeUpdate(l ethTypes.Log, header *ethTypes.Header) (*types.L1InfoTreeUpdate, error) {
 	if len(l.Topics) != 3 {
-		log.Warn("Received log for info tree that did not have 3 topics")
-		return nil, nil
+		return nil, errors.New("received log for info tree that did not have 3 topics")
 	}
-	var err error
+
+	if l.BlockNumber != header.Number.Uint64() {
+		return nil, errors.New("received log for info tree that did not match the block number")
+	}
 
 	mainnetExitRoot := l.Topics[1]
 	rollupExitRoot := l.Topics[2]
@@ -149,39 +216,29 @@ func HandleL1InfoTreeUpdate(
 		GER:             common.BytesToHash(ger),
 		MainnetExitRoot: mainnetExitRoot,
 		RollupExitRoot:  rollupExitRoot,
+		BlockNumber:     l.BlockNumber,
+		Timestamp:       header.Time,
+		ParentHash:      header.ParentHash,
 	}
 
-	if !found {
-		// this is a special case, so we need to start at index 0
-		update.Index = 0
-	} else {
-		// increment the index from the previous entry
-		update.Index = latestUpdate.Index + 1
-	}
-
-	// now we need the block timestamp and the parent hash information for the block tied
-	// to this event
-	if header == nil {
-		header, err = syncer.GetHeader(l.BlockNumber)
-		if err != nil {
-			return nil, err
-		}
-	}
-	update.ParentHash = header.ParentHash
-	update.Timestamp = header.Time
-	update.BlockNumber = l.BlockNumber
-
-	if err = hermezDb.WriteL1InfoTreeUpdate(update); err != nil {
-		return nil, err
-	}
-	if err = hermezDb.WriteL1InfoTreeUpdateToGer(update); err != nil {
-		return nil, err
-	}
 	return update, nil
 }
 
+func HandleL1InfoTreeUpdate(
+	hermezDb *hermez_db.HermezDb,
+	update *types.L1InfoTreeUpdate,
+) error {
+	var err error
+	if err = hermezDb.WriteL1InfoTreeUpdate(update); err != nil {
+		return err
+	}
+	if err = hermezDb.WriteL1InfoTreeUpdateToGer(update); err != nil {
+		return err
+	}
+	return nil
+}
+
 const (
-	injectedBatchLogTrailingBytes        = 24
 	injectedBatchLogTransactionStartByte = 128
 	injectedBatchLastGerStartByte        = 31
 	injectedBatchLastGerEndByte          = 64
@@ -204,9 +261,11 @@ func HandleInitialSequenceBatches(
 		}
 	}
 
-	// the log appears to have some trailing 24 bytes of all 0s in it.  Not sure why but we can't handle the
+	// the log appears to have some trailing some bytes of all 0s in it.  Not sure why but we can't handle the
 	// TX without trimming these off
+	injectedBatchLogTrailingBytes := getTrailingCutoffLen(l.Data)
 	trailingCutoff := len(l.Data) - injectedBatchLogTrailingBytes
+	log.Debug(fmt.Sprintf("Handle initial sequence batches, trail len:%v, log data: %v", injectedBatchLogTrailingBytes, l.Data))
 
 	txData := l.Data[injectedBatchLogTransactionStartByte:trailingCutoff]
 
@@ -233,4 +292,13 @@ func UnwindL1SequencerSyncStage(u *stagedsync.UnwindState, tx kv.RwTx, cfg L1Seq
 
 func PruneL1SequencerSyncStage(s *stagedsync.PruneState, tx kv.RwTx, cfg L1SequencerSyncCfg, ctx context.Context) error {
 	return nil
+}
+
+func getTrailingCutoffLen(logData []byte) int {
+	for i := len(logData) - 1; i >= 0; i-- {
+		if logData[i] != 0 {
+			return len(logData) - i - 1
+		}
+	}
+	return 0
 }

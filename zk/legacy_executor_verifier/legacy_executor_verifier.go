@@ -2,6 +2,7 @@ package legacy_executor_verifier
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,11 +16,12 @@ import (
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/chain"
 	"github.com/ledgerwatch/erigon/core/rawdb"
+	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
 	"github.com/ledgerwatch/erigon/zk/datastream/server"
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
 	"github.com/ledgerwatch/erigon/zk/legacy_executor_verifier/proto/github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
-	"github.com/ledgerwatch/erigon/zk/syncer"
+	"github.com/ledgerwatch/erigon/zk/utils"
 	"github.com/ledgerwatch/log/v3"
 )
 
@@ -27,52 +29,64 @@ var ErrNoExecutorAvailable = fmt.Errorf("no executor available")
 
 type VerifierRequest struct {
 	BatchNumber  uint64
+	BlockNumbers []uint64
 	ForkId       uint64
 	StateRoot    common.Hash
 	Counters     map[string]int
 	creationTime time.Time
+	timeout      time.Duration
 }
 
-func NewVerifierRequest(batchNumber, forkId uint64, stateRoot common.Hash, counters map[string]int) *VerifierRequest {
+func NewVerifierRequest(forkId, batchNumber uint64, blockNumbers []uint64, stateRoot common.Hash, counters map[string]int) *VerifierRequest {
+	return NewVerifierRequestWithTimeout(forkId, batchNumber, blockNumbers, stateRoot, counters, 0)
+}
+
+func NewVerifierRequestWithTimeout(forkId, batchNumber uint64, blockNumbers []uint64, stateRoot common.Hash, counters map[string]int, timeout time.Duration) *VerifierRequest {
 	return &VerifierRequest{
 		BatchNumber:  batchNumber,
+		BlockNumbers: blockNumbers,
 		ForkId:       forkId,
 		StateRoot:    stateRoot,
 		Counters:     counters,
 		creationTime: time.Now(),
+		timeout:      timeout,
 	}
 }
 
-func (vr *VerifierRequest) isOverdue() bool {
-	return time.Since(vr.creationTime) > time.Duration(30*time.Minute)
+func (vr *VerifierRequest) IsOverdue() bool {
+	if vr.timeout == 0 {
+		return false
+	}
+
+	return time.Since(vr.creationTime) > vr.timeout
+}
+
+func (vr *VerifierRequest) GetFirstBlockNumber() uint64 {
+	return vr.BlockNumbers[0]
+}
+
+func (vr *VerifierRequest) GetLastBlockNumber() uint64 {
+	return vr.BlockNumbers[len(vr.BlockNumbers)-1]
 }
 
 type VerifierResponse struct {
-	BatchNumber      uint64
 	Valid            bool
 	Witness          []byte
 	ExecutorResponse *executor.ProcessBatchResponseV2
+	OriginalCounters map[string]int
 	Error            error
 }
 
 type VerifierBundle struct {
-	request  *VerifierRequest
-	response *VerifierResponse
+	Request  *VerifierRequest
+	Response *VerifierResponse
 }
 
 func NewVerifierBundle(request *VerifierRequest, response *VerifierResponse) *VerifierBundle {
 	return &VerifierBundle{
-		request:  request,
-		response: response,
+		Request:  request,
+		Response: response,
 	}
-}
-
-type ILegacyExecutor interface {
-	Verify(*Payload, *VerifierRequest, common.Hash) (bool, *executor.ProcessBatchResponseV2, error)
-	CheckOnline() bool
-	QueueLength() int
-	AquireAccess()
-	ReleaseAccess()
 }
 
 type WitnessGenerator interface {
@@ -82,28 +96,23 @@ type WitnessGenerator interface {
 type LegacyExecutorVerifier struct {
 	db                     kv.RwDB
 	cfg                    ethconfig.Zk
-	executors              []ILegacyExecutor
+	executors              []*Executor
 	executorNumber         int
 	cancelAllVerifications atomic.Bool
 
-	quit chan struct{}
-
 	streamServer     *server.DataStreamServer
-	stream           *datastreamer.StreamServer
-	witnessGenerator WitnessGenerator
-	l1Syncer         *syncer.L1Syncer
+	WitnessGenerator WitnessGenerator
 
-	promises     []*Promise[*VerifierBundle]
-	addedBatches map[uint64]struct{}
+	promises    []*Promise[*VerifierBundle]
+	mtxPromises *sync.Mutex
 }
 
 func NewLegacyExecutorVerifier(
 	cfg ethconfig.Zk,
-	executors []ILegacyExecutor,
+	executors []*Executor,
 	chainCfg *chain.Config,
 	db kv.RwDB,
 	witnessGenerator WitnessGenerator,
-	l1Syncer *syncer.L1Syncer,
 	stream *datastreamer.StreamServer,
 ) *LegacyExecutorVerifier {
 	streamServer := server.NewDataStreamServer(stream, chainCfg.ChainID.Uint64())
@@ -113,17 +122,44 @@ func NewLegacyExecutorVerifier(
 		executors:              executors,
 		executorNumber:         0,
 		cancelAllVerifications: atomic.Bool{},
-		quit:                   make(chan struct{}),
 		streamServer:           streamServer,
-		stream:                 stream,
-		witnessGenerator:       witnessGenerator,
-		l1Syncer:               l1Syncer,
+		WitnessGenerator:       witnessGenerator,
 		promises:               make([]*Promise[*VerifierBundle], 0),
-		addedBatches:           make(map[uint64]struct{}),
+		mtxPromises:            &sync.Mutex{},
 	}
 }
 
-func (v *LegacyExecutorVerifier) VerifySync(tx kv.Tx, request *VerifierRequest, witness, streamBytes []byte, timestampLimit, firstBlockNumber uint64, l1InfoTreeMinTimestamps map[uint64]uint64) error {
+func (v *LegacyExecutorVerifier) StartAsyncVerification(
+	logPrefix string,
+	forkId uint64,
+	batchNumber uint64,
+	stateRoot common.Hash,
+	counters map[string]int,
+	blockNumbers []uint64,
+	useRemoteExecutor bool,
+	requestTimeout time.Duration,
+) {
+	var promise *Promise[*VerifierBundle]
+
+	request := NewVerifierRequestWithTimeout(forkId, batchNumber, blockNumbers, stateRoot, counters, requestTimeout)
+	if useRemoteExecutor {
+		promise = v.VerifyAsync(request)
+	} else {
+		promise = v.VerifyWithoutExecutor(request)
+	}
+
+	size := v.appendPromise(promise)
+	log.Info(fmt.Sprintf("[%s] Starting verification request", logPrefix), "batch-number", batchNumber, "blocks-range", fmt.Sprintf("[%d;%d]", request.GetFirstBlockNumber(), request.GetLastBlockNumber()), "pending-requests", size)
+}
+
+func (v *LegacyExecutorVerifier) appendPromise(promise *Promise[*VerifierBundle]) int {
+	v.mtxPromises.Lock()
+	defer v.mtxPromises.Unlock()
+	v.promises = append(v.promises, promise)
+	return len(v.promises)
+}
+
+func (v *LegacyExecutorVerifier) VerifySync(tx kv.Tx, request *VerifierRequest, witness, streamBytes []byte, timestampLimit uint64, l1InfoTreeMinTimestamps map[uint64]uint64) error {
 	oldAccInputHash := common.HexToHash("0x0")
 	payload := &Payload{
 		Witness:                 witness,
@@ -137,34 +173,43 @@ func (v *LegacyExecutorVerifier) VerifySync(tx kv.Tx, request *VerifierRequest, 
 		L1InfoTreeMinTimestamps: l1InfoTreeMinTimestamps,
 	}
 
-	e := v.getNextOnlineAvailableExecutor()
+	e := v.GetNextOnlineAvailableExecutor()
 	if e == nil {
 		return ErrNoExecutorAvailable
 	}
 
+	t := utils.StartTimer("legacy-executor-verifier", "verify-sync")
+	defer t.LogTimer()
+
 	e.AquireAccess()
 	defer e.ReleaseAccess()
 
-	previousBlock, err := rawdb.ReadBlockByNumber(tx, firstBlockNumber-1)
+	previousBlock, err := rawdb.ReadBlockByNumber(tx, request.GetFirstBlockNumber()-1)
 	if err != nil {
 		return err
 	}
 
-	_, _, executorErr := e.Verify(payload, request, previousBlock.Root())
+	_, _, executorErr, generalErr := e.Verify(payload, request, previousBlock.Root())
+	if generalErr != nil {
+		return generalErr
+	}
 	return executorErr
 }
 
-// Unsafe is not thread-safe so it MUST be invoked only from a single thread
-func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequencerBatchSealTime time.Duration) *Promise[*VerifierBundle] {
+func (v *LegacyExecutorVerifier) VerifyAsync(request *VerifierRequest) *Promise[*VerifierBundle] {
 	// eager promise will do the work as soon as called in a goroutine, then we can retrieve the result later
 	// ProcessResultsSequentiallyUnsafe relies on the fact that this function returns ALWAYS non-verifierBundle and error. The only exception is the case when verifications has been canceled. Only then the verifierBundle can be nil
-	promise := NewPromise[*VerifierBundle](func() (*VerifierBundle, error) {
+	return NewPromise[*VerifierBundle](func() (*VerifierBundle, error) {
 		verifierBundle := NewVerifierBundle(request, nil)
+		blockNumbers := verifierBundle.Request.BlockNumbers
 
-		e := v.getNextOnlineAvailableExecutor()
+		e := v.GetNextOnlineAvailableExecutor()
 		if e == nil {
 			return verifierBundle, ErrNoExecutorAvailable
 		}
+
+		t := utils.StartTimer("legacy-executor-verifier", "verify-async")
+		defer t.LogTimer()
 
 		e.AquireAccess()
 		defer e.ReleaseAccess()
@@ -173,33 +218,11 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 		}
 
 		var err error
-		var blocks []uint64
-		startTime := time.Now()
 		ctx := context.Background()
 		// mapmutation has some issue with us not having a quit channel on the context call to `Done` so
 		// here we're creating a cancelable context and just deferring the cancel
 		innerCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-
-		// get the data stream bytes
-		for time.Since(startTime) < 3*sequencerBatchSealTime {
-			// we might not have blocks yet as the underlying stage loop might still be running and the tx hasn't been
-			// committed yet so just requeue the request
-			blocks, err = v.availableBlocksToProcess(innerCtx, request.BatchNumber)
-			if err != nil {
-				return verifierBundle, err
-			}
-
-			if len(blocks) > 0 {
-				break
-			}
-
-			time.Sleep(time.Second)
-		}
-
-		if len(blocks) == 0 {
-			return verifierBundle, fmt.Errorf("still not blocks in this batch")
-		}
 
 		tx, err := v.db.BeginRo(innerCtx)
 		if err != nil {
@@ -210,14 +233,14 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 		hermezDb := hermez_db.NewHermezDbReader(tx)
 
 		l1InfoTreeMinTimestamps := make(map[uint64]uint64)
-		streamBytes, err := v.GetStreamBytes(request.BatchNumber, tx, blocks, hermezDb, l1InfoTreeMinTimestamps, nil)
+		streamBytes, err := v.GetWholeBatchStreamBytes(request.BatchNumber, tx, blockNumbers, hermezDb, l1InfoTreeMinTimestamps, nil)
 		if err != nil {
 			return verifierBundle, err
 		}
 
-		witness, err := v.witnessGenerator.GetWitnessByBlockRange(tx, ctx, blocks[0], blocks[len(blocks)-1], false, v.cfg.WitnessFull)
+		witness, err := v.WitnessGenerator.GetWitnessByBlockRange(tx, innerCtx, blockNumbers[0], blockNumbers[len(blockNumbers)-1], false, v.cfg.WitnessFull)
 		if err != nil {
-			return nil, err
+			return verifierBundle, err
 		}
 
 		log.Debug("witness generated", "data", hex.EncodeToString(witness))
@@ -226,7 +249,7 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 		// timestampLimit >= currentTimestamp (from batch pre-state) + deltaTimestamp
 		// so to ensure we have a good value we can take the timestamp of the last block in the batch
 		// and just add 5 minutes
-		lastBlock, err := rawdb.ReadBlockByNumber(tx, blocks[len(blocks)-1])
+		lastBlock, err := rawdb.ReadBlockByNumber(tx, blockNumbers[len(blockNumbers)-1])
 		if err != nil {
 			return verifierBundle, err
 		}
@@ -246,12 +269,16 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 			L1InfoTreeMinTimestamps: l1InfoTreeMinTimestamps,
 		}
 
-		previousBlock, err := rawdb.ReadBlockByNumber(tx, blocks[0]-1)
+		previousBlock, err := rawdb.ReadBlockByNumber(tx, blockNumbers[0]-1)
 		if err != nil {
 			return verifierBundle, err
 		}
 
-		ok, executorResponse, executorErr := e.Verify(payload, request, previousBlock.Root())
+		ok, executorResponse, executorErr, generalErr := e.Verify(payload, request, previousBlock.Root())
+		if generalErr != nil {
+			return verifierBundle, generalErr
+		}
+
 		if executorErr != nil {
 			if errors.Is(executorErr, ErrExecutorStateRootMismatch) {
 				log.Error("[Verifier] State root mismatch detected", "err", executorErr)
@@ -262,8 +289,7 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 			}
 		}
 
-		verifierBundle.response = &VerifierResponse{
-			BatchNumber:      request.BatchNumber,
+		verifierBundle.Response = &VerifierResponse{
 			Valid:            ok,
 			Witness:          witness,
 			ExecutorResponse: executorResponse,
@@ -271,23 +297,43 @@ func (v *LegacyExecutorVerifier) AddRequestUnsafe(request *VerifierRequest, sequ
 		}
 		return verifierBundle, nil
 	})
+}
 
-	// add batch to the list of batches we've added
-	v.addedBatches[request.BatchNumber] = struct{}{}
+func (v *LegacyExecutorVerifier) VerifyWithoutExecutor(request *VerifierRequest) *Promise[*VerifierBundle] {
+	promise := NewPromise[*VerifierBundle](func() (*VerifierBundle, error) {
+		response := &VerifierResponse{
+			Valid:            true,
+			OriginalCounters: request.Counters,
+			Witness:          nil,
+			ExecutorResponse: nil,
+			Error:            nil,
+		}
+		return NewVerifierBundle(request, response), nil
+	})
+	promise.Wait()
 
-	// add the promise to the list of promises
-	v.promises = append(v.promises, promise)
 	return promise
 }
 
-// Unsafe is not thread-safe so it MUST be invoked only from a single thread
-func (v *LegacyExecutorVerifier) ProcessResultsSequentiallyUnsafe(tx kv.RwTx) ([]*VerifierResponse, error) {
-	hdb := hermez_db.NewHermezDbReader(tx)
+func (v *LegacyExecutorVerifier) HasPendingVerifications() bool {
+	v.mtxPromises.Lock()
+	defer v.mtxPromises.Unlock()
 
-	results := make([]*VerifierResponse, 0, len(v.promises))
-	for i := 0; i < len(v.promises); i++ {
-		verifierBundle, err := v.promises[i].TryGet()
+	return len(v.promises) > 0
+}
+
+func (v *LegacyExecutorVerifier) ProcessResultsSequentially(logPrefix string) ([]*VerifierBundle, error) {
+	v.mtxPromises.Lock()
+	defer v.mtxPromises.Unlock()
+
+	var verifierResponse []*VerifierBundle
+
+	// not a stop signal, so we can start to process our promises now
+	for idx, promise := range v.promises {
+		verifierBundle, err := promise.TryGet()
 		if verifierBundle == nil && err == nil {
+			// If code enters here this means that this promise is not yet completed
+			// We must processes responses sequentially so if this one is not ready we can just break
 			break
 		}
 
@@ -299,44 +345,36 @@ func (v *LegacyExecutorVerifier) ProcessResultsSequentiallyUnsafe(tx kv.RwTx) ([
 			}
 
 			log.Error("error on our end while preparing the verification request, re-queueing the task", "err", err)
-			// this is an error on our end, so just re-create the promise at exact position where it was
-			if verifierBundle.request.isOverdue() {
-				return nil, fmt.Errorf("error: batch %d couldn't be processed in 30 minutes", verifierBundle.request.BatchNumber)
+
+			if verifierBundle.Request.IsOverdue() {
+				// signal an error, the caller can check on this and stop the process if needs be
+				return nil, fmt.Errorf("error: batch %d couldn't be processed in 30 minutes", verifierBundle.Request.BatchNumber)
 			}
 
-			v.promises[i] = NewPromise[*VerifierBundle](v.promises[i].task)
+			// re-queue the task - it should be safe to replace the index of the slice here as we only add to it
+			v.promises[idx] = promise.CloneAndRerun()
+
+			// break now as we know we can't proceed here until this promise is attempted again
 			break
 		}
 
-		verifierResponse := verifierBundle.response
-		if verifierResponse.Valid {
-			if err = v.WriteBatchToStream(verifierResponse.BatchNumber, hdb, tx); err != nil {
-				log.Error("error getting verifier result", "err", err)
-			}
-		}
-
-		results = append(results, verifierResponse)
-		delete(v.addedBatches, verifierResponse.BatchNumber)
-
-		// no point to process any further responses if we've found an invalid one
-		if !verifierResponse.Valid {
-			break
-		}
+		log.Info(fmt.Sprintf("[%s] Finished verification request", logPrefix), "batch-number", verifierBundle.Request.BatchNumber, "blocks-range", fmt.Sprintf("[%d;%d]", verifierBundle.Request.GetFirstBlockNumber(), verifierBundle.Request.GetLastBlockNumber()), "is-valid", verifierBundle.Response.Valid, "pending-requests", len(v.promises)-1-idx)
+		verifierResponse = append(verifierResponse, verifierBundle)
 	}
 
-	// leave only non-processed promises
-	// v.promises = v.promises[len(results):]
+	// remove processed promises from the list
+	v.promises = v.promises[len(verifierResponse):]
 
-	return results, nil
+	return verifierResponse, nil
 }
 
-func (v *LegacyExecutorVerifier) MarkTopResponseAsProcessed(batchNumber uint64) {
-	v.promises = v.promises[1:]
-	delete(v.addedBatches, batchNumber)
+func (v *LegacyExecutorVerifier) Wait() {
+	for _, p := range v.promises {
+		p.Wait()
+	}
 }
 
-// Unsafe is not thread-safe so it MUST be invoked only from a single thread
-func (v *LegacyExecutorVerifier) CancelAllRequestsUnsafe() {
+func (v *LegacyExecutorVerifier) CancelAllRequests() {
 	// cancel all promises
 	// all queued promises will return ErrPromiseCancelled while getting its result
 	for _, p := range v.promises {
@@ -348,7 +386,7 @@ func (v *LegacyExecutorVerifier) CancelAllRequestsUnsafe() {
 	v.cancelAllVerifications.Store(true)
 
 	for _, e := range v.executors {
-		// lets wait for all threads that are waiting to add to v.openRequests to finish
+		// let's wait for all threads that are waiting to add to v.openRequests to finish
 		for e.QueueLength() > 0 {
 			time.Sleep(1 * time.Millisecond)
 		}
@@ -357,34 +395,10 @@ func (v *LegacyExecutorVerifier) CancelAllRequestsUnsafe() {
 	v.cancelAllVerifications.Store(false)
 
 	v.promises = make([]*Promise[*VerifierBundle], 0)
-	v.addedBatches = map[uint64]struct{}{}
 }
 
-// Unsafe is not thread-safe so it MUST be invoked only from a single thread
-func (v *LegacyExecutorVerifier) HasExecutorsUnsafe() bool {
-	return len(v.executors) > 0
-}
-
-// Unsafe is not thread-safe so it MUST be invoked only from a single thread
-func (v *LegacyExecutorVerifier) IsRequestAddedUnsafe(batch uint64) bool {
-	_, ok := v.addedBatches[batch]
-	return ok
-}
-
-func (v *LegacyExecutorVerifier) WriteBatchToStream(batchNumber uint64, hdb *hermez_db.HermezDbReader, roTx kv.Tx) error {
-	blks, err := hdb.GetL2BlockNosByBatch(batchNumber)
-	if err != nil {
-		return err
-	}
-
-	if err := server.WriteBlocksToStream(roTx, hdb, v.streamServer, v.stream, blks[0], blks[len(blks)-1], "verifier"); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (v *LegacyExecutorVerifier) getNextOnlineAvailableExecutor() ILegacyExecutor {
-	var exec ILegacyExecutor
+func (v *LegacyExecutorVerifier) GetNextOnlineAvailableExecutor() *Executor {
+	var exec *Executor
 
 	// TODO: find executors with spare capacity
 
@@ -404,75 +418,58 @@ func (v *LegacyExecutorVerifier) getNextOnlineAvailableExecutor() ILegacyExecuto
 	return exec
 }
 
-func (v *LegacyExecutorVerifier) availableBlocksToProcess(innerCtx context.Context, batchNumber uint64) ([]uint64, error) {
-	tx, err := v.db.BeginRo(innerCtx)
-	if err != nil {
-		return []uint64{}, err
-	}
-	defer tx.Rollback()
-
-	hermezDb := hermez_db.NewHermezDbReader(tx)
-	blocks, err := hermezDb.GetL2BlockNosByBatch(batchNumber)
-	if err != nil {
-		return []uint64{}, err
-	}
-
-	for _, blockNum := range blocks {
-		block, err := rawdb.ReadBlockByNumber(tx, blockNum)
-		if err != nil {
-			return []uint64{}, err
-		}
-		if block == nil {
-			return []uint64{}, nil
-		}
-	}
-
-	return blocks, nil
-}
-
-func (v *LegacyExecutorVerifier) GetStreamBytes(
+func (v *LegacyExecutorVerifier) GetWholeBatchStreamBytes(
 	batchNumber uint64,
 	tx kv.Tx,
-	blocks []uint64,
+	blockNumbers []uint64,
 	hermezDb *hermez_db.HermezDbReader,
 	l1InfoTreeMinTimestamps map[uint64]uint64,
 	transactionsToIncludeByIndex [][]int, // passing nil here will include all transactions in the blocks
-) ([]byte, error) {
-	lastBlock, err := rawdb.ReadBlockByNumber(tx, blocks[0]-1)
-	if err != nil {
-		return nil, err
-	}
-	var streamBytes []byte
+) (streamBytes []byte, err error) {
+	blocks := make([]types.Block, 0, len(blockNumbers))
+	txsPerBlock := make(map[uint64][]types.Transaction)
 
 	// as we only ever use the executor verifier for whole batches we can safely assume that the previous batch
 	// will always be the request batch - 1 and that the first block in the batch will be at the batch
 	// boundary so we will always add in the batch bookmark to the stream
 	previousBatch := batchNumber - 1
 
-	for idx, blockNumber := range blocks {
+	for idx, blockNumber := range blockNumbers {
 		block, err := rawdb.ReadBlockByNumber(tx, blockNumber)
 		if err != nil {
 			return nil, err
 		}
+		blocks = append(blocks, *block)
 
-		var sBytes []byte
-
-		isBatchEnd := idx == len(blocks)-1
-
-		var transactionsToIncludeByIndexInBlock []int = nil
+		filteredTransactions := block.Transactions()
+		// filter transactions by indexes that should be included
 		if transactionsToIncludeByIndex != nil {
-			transactionsToIncludeByIndexInBlock = transactionsToIncludeByIndex[idx]
-		}
-		sBytes, err = v.streamServer.CreateAndBuildStreamEntryBytesProto(block, hermezDb, tx, lastBlock, batchNumber, previousBatch, l1InfoTreeMinTimestamps, isBatchEnd, transactionsToIncludeByIndexInBlock)
-		if err != nil {
-			return nil, err
+			filteredTransactions = filterTransactionByIndexes(block.Transactions(), transactionsToIncludeByIndex[idx])
 		}
 
-		streamBytes = append(streamBytes, sBytes...)
-		lastBlock = block
-		// we only put in the batch bookmark at the start of the stream data once
-		previousBatch = batchNumber
+		txsPerBlock[blockNumber] = filteredTransactions
 	}
 
-	return streamBytes, nil
+	entries, err := server.BuildWholeBatchStreamEntriesProto(tx, hermezDb, v.streamServer.GetChainId(), previousBatch, batchNumber, blocks, txsPerBlock, l1InfoTreeMinTimestamps)
+	if err != nil {
+		return nil, err
+	}
+
+	return entries.Marshal()
+}
+
+func filterTransactionByIndexes(
+	filteredTransactions types.Transactions,
+	transactionsToIncludeByIndex []int,
+) types.Transactions {
+	if transactionsToIncludeByIndex != nil {
+		filteredTransactionsBuilder := make(types.Transactions, len(transactionsToIncludeByIndex))
+		for i, txIndexInBlock := range transactionsToIncludeByIndex {
+			filteredTransactionsBuilder[i] = filteredTransactions[txIndexInBlock]
+		}
+
+		filteredTransactions = filteredTransactionsBuilder
+	}
+
+	return filteredTransactions
 }

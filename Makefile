@@ -5,7 +5,7 @@ DOCKER := $(shell command -v docker 2> /dev/null)
 
 GIT_COMMIT ?= $(shell git rev-list -1 HEAD)
 GIT_BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
-GIT_TAG    ?= $(shell git describe --tags '--match=v*' --dirty 2>/dev/null || echo "untagged")
+GIT_TAG    ?= $(shell git describe --all)
 ERIGON_USER ?= erigon
 # if using volume-mounting data dir, then must exist on host OS
 DOCKER_UID ?= $(shell id -u)
@@ -37,7 +37,7 @@ GO_FLAGS += -ldflags "-X ${PACKAGE}/params.GitCommit=${GIT_COMMIT} -X ${PACKAGE}
 
 GOBUILD = $(CGO_CFLAGS) $(GO) build $(GO_FLAGS)
 GO_DBG_BUILD = $(GO) build $(GO_FLAGS) -tags $(BUILD_TAGS),debug -gcflags=all="-N -l"  # see delve docs
-GOTEST = $(CGO_CFLAGS) GODEBUG=cgocheck=0 $(GO) test $(GO_FLAGS) ./... -p 2
+GOTEST = $(CGO_CFLAGS) GODEBUG=cgocheck=0 $(GO) test $(GO_FLAGS) -coverprofile=coverage.out ./... -p 2
 
 default: all
 
@@ -149,7 +149,7 @@ db-tools:
 
 ## test:                              run unit tests with a 100s timeout
 test:
-	$(GOTEST) --timeout 200s
+	$(GOTEST) --timeout 10m
 
 test3:
 	$(GOTEST) --timeout 200s -tags $(BUILD_TAGS),erigon3

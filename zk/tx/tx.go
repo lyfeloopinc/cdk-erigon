@@ -189,6 +189,8 @@ func DecodeBatchL2Blocks(txsData []byte, forkID uint64) ([]DecodedBatchL2Data, e
 	return result, nil
 }
 
+type TxDecoder func(encodedTx []byte, gasPricePercentage uint8, forkID uint64) (types.Transaction, uint8, error)
+
 func DecodeTx(encodedTx []byte, efficiencyPercentage byte, forkId uint64) (types.Transaction, uint8, error) {
 	// efficiencyPercentage := uint8(0)
 	if forkId >= uint64(constants.ForkID5Dragonfruit) {
@@ -320,9 +322,9 @@ func TransactionToL2Data(tx types.Transaction, forkId uint16, efficiencyPercenta
 		removeLeadingZeroesFromBytes(nonceBytes),
 		removeLeadingZeroesFromBytes(gasPriceBytes),
 		removeLeadingZeroesFromBytes(gas),
-		removeLeadingZeroesFromBytes(to),
+		to, // don't remove leading 0s from addr
 		removeLeadingZeroesFromBytes(valueBytes),
-		removeLeadingZeroesFromBytes(tx.GetData()),
+		tx.GetData(),
 	}
 
 	if !tx.GetChainID().Eq(uint256.NewInt(0)) || !(v.Eq(uint256.NewInt(27)) || v.Eq(uint256.NewInt(28))) {
@@ -382,16 +384,14 @@ func GetDecodedV(tx types.Transaction, v *uint256.Int) *uint256.Int {
 	return result
 }
 
-func GenerateBlockBatchL2Data(forkId uint16, deltaTimestamp uint32, l1InfoTreeIndex uint32, transactions []types.Transaction) ([]byte, error) {
-	var result []byte
-
-	// add in the changeL2Block transaction
-	result = append(result, changeL2BlockTxType)
-	result = binary.BigEndian.AppendUint32(result, deltaTimestamp)
-	result = binary.BigEndian.AppendUint32(result, l1InfoTreeIndex)
-
+func GenerateBlockBatchL2Data(forkId uint16, deltaTimestamp uint32, l1InfoTreeIndex uint32, transactions []types.Transaction, egTx map[common.Hash]uint8) ([]byte, error) {
+	result := make([]byte, 0)
+	// add in the changeL2Block transaction if after forkId 7
+	if forkId >= uint16(constants.ForkID7Etrog) {
+		result = GenerateStartBlockBatchL2Data(deltaTimestamp, l1InfoTreeIndex)
+	}
 	for _, transaction := range transactions {
-		encoded, err := TransactionToL2Data(transaction, forkId, MaxEffectivePercentage)
+		encoded, err := TransactionToL2Data(transaction, forkId, egTx[transaction.Hash()])
 		if err != nil {
 			return nil, err
 		}
@@ -399,6 +399,21 @@ func GenerateBlockBatchL2Data(forkId uint16, deltaTimestamp uint32, l1InfoTreeIn
 	}
 
 	return result, nil
+}
+
+var (
+	START_BLOCK_BATCH_L2_DATA_SIZE = uint64(65) // change this if GenerateStartBlockBatchL2Data changes
+)
+
+func GenerateStartBlockBatchL2Data(deltaTimestamp uint32, l1InfoTreeIndex uint32) []byte {
+	var result []byte
+
+	// add in the changeL2Block transaction
+	result = append(result, changeL2BlockTxType)
+	result = binary.BigEndian.AppendUint32(result, deltaTimestamp)
+	result = binary.BigEndian.AppendUint32(result, l1InfoTreeIndex)
+
+	return result
 }
 
 func ComputeL2TxHash(
@@ -485,13 +500,11 @@ func ComputeL2TxHash(
 	}
 	hash += fromPart
 
-	hashed, err := utils.HashContractBytecode(hash)
-	if err != nil {
-		return common.Hash{}, err
-	}
-
+	hashed := utils.HashContractBytecode(hash)
 	return common.HexToHash(hashed), nil
 }
+
+var re = regexp.MustCompile("^[0-9a-fA-F]*$")
 
 func formatL2TxHashParam(param interface{}, paramLength int) (string, error) {
 	var paramStr string
@@ -549,11 +562,7 @@ func formatL2TxHashParam(param interface{}, paramLength int) (string, error) {
 		paramStr = "0" + paramStr
 	}
 
-	matched, err := regexp.MatchString("^[0-9a-fA-F]+$", paramStr)
-	if err != nil {
-		return "", err
-	}
-	if !matched {
+	if !re.MatchString(paramStr) {
 		return "", fmt.Errorf("invalid hex string")
 	}
 

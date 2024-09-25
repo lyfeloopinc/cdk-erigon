@@ -2,16 +2,12 @@ package stages
 
 import (
 	"context"
-	"time"
 
 	"github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 
 	"bytes"
 	"io"
-
-	"encoding/binary"
-	"errors"
 
 	mapset "github.com/deckarep/golang-set/v2"
 	types2 "github.com/gateway-fm/cdk-erigon-lib/types"
@@ -21,135 +17,63 @@ import (
 	"github.com/ledgerwatch/erigon/core/vm"
 	"github.com/ledgerwatch/erigon/core/vm/evmtypes"
 	"github.com/ledgerwatch/erigon/rlp"
-	"github.com/ledgerwatch/erigon/zk/constants"
-	"github.com/ledgerwatch/erigon/zk/hermez_db"
-	zktx "github.com/ledgerwatch/erigon/zk/tx"
 	"github.com/ledgerwatch/erigon/zk/utils"
-	"github.com/gateway-fm/cdk-erigon-lib/common/length"
+	"github.com/ledgerwatch/log/v3"
 )
 
-func getNextPoolTransactions(cfg SequenceBlockCfg, executionAt, forkId uint64, alreadyYielded mapset.Set[[32]byte]) ([]types.Transaction, error) {
-	var transactions []types.Transaction
-	var err error
-	var count int
-	killer := time.NewTicker(50 * time.Millisecond)
-LOOP:
-	for {
-		// ensure we don't spin forever looking for transactions, attempt for a while then exit up to the caller
-		select {
-		case <-killer.C:
-			break LOOP
-		default:
-		}
-		if err := cfg.txPoolDb.View(context.Background(), func(poolTx kv.Tx) error {
-			slots := types2.TxsRlp{}
-			_, count, err = cfg.txPool.YieldBest(yieldSize, &slots, poolTx, executionAt, utils.GetBlockGasLimitForFork(forkId), alreadyYielded)
-			if err != nil {
-				return err
-			}
-			if count == 0 {
-				time.Sleep(500 * time.Microsecond)
-				return nil
-			}
-			transactions, err = extractTransactionsFromSlot(&slots)
-			if err != nil {
-				return err
-			}
-			return nil
-		}); err != nil {
-			return nil, err
-		}
+func getNextPoolTransactions(ctx context.Context, cfg SequenceBlockCfg, executionAt, forkId uint64, alreadyYielded mapset.Set[[32]byte]) ([]types.Transaction, bool, error) {
+	cfg.txPool.LockFlusher()
+	defer cfg.txPool.UnlockFlusher()
 
-		if len(transactions) > 0 {
-			break
+	var transactions []types.Transaction
+	var allConditionsOk bool
+	var err error
+
+	gasLimit := utils.GetBlockGasLimitForFork(forkId)
+
+	if err := cfg.txPoolDb.View(ctx, func(poolTx kv.Tx) error {
+		slots := types2.TxsRlp{}
+		if allConditionsOk, _, err = cfg.txPool.YieldBest(cfg.yieldSize, &slots, poolTx, executionAt, gasLimit, alreadyYielded); err != nil {
+			return err
 		}
+		yieldedTxs, err := extractTransactionsFromSlot(&slots)
+		if err != nil {
+			return err
+		}
+		transactions = append(transactions, yieldedTxs...)
+		return nil
+	}); err != nil {
+		return nil, allConditionsOk, err
 	}
 
-	return transactions, err
+	return transactions, allConditionsOk, err
 }
 
-func getLimboTransaction(cfg SequenceBlockCfg, txHash *common.Hash) ([]types.Transaction, error) {
-	var transactions []types.Transaction
+func getLimboTransaction(ctx context.Context, cfg SequenceBlockCfg, txHash *common.Hash) ([]types.Transaction, error) {
+	cfg.txPool.LockFlusher()
+	defer cfg.txPool.UnlockFlusher()
 
-	for {
-		// ensure we don't spin forever looking for transactions, attempt for a while then exit up to the caller
-		if err := cfg.txPoolDb.View(context.Background(), func(poolTx kv.Tx) error {
-			slots, err := cfg.txPool.GetLimboTxRplsByHash(poolTx, txHash)
+	var transactions []types.Transaction
+	// ensure we don't spin forever looking for transactions, attempt for a while then exit up to the caller
+	if err := cfg.txPoolDb.View(ctx, func(poolTx kv.Tx) error {
+		slots, err := cfg.txPool.GetLimboTxRplsByHash(poolTx, txHash)
+		if err != nil {
+			return err
+		}
+
+		if slots != nil {
+			transactions, err = extractTransactionsFromSlot(slots)
 			if err != nil {
 				return err
 			}
-
-			if slots != nil {
-				transactions, err = extractTransactionsFromSlot(slots)
-				if err != nil {
-					return err
-				}
-			}
-
-			return nil
-		}); err != nil {
-			return nil, err
 		}
 
-		if len(transactions) == 0 {
-			time.Sleep(250 * time.Millisecond)
-		} else {
-			break
-		}
-
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return transactions, nil
-}
-
-func getNextL1BatchData(batchNumber uint64, forkId uint64, hermezDb *hermez_db.HermezDb) (*nextBatchL1Data, error) {
-	nextData := &nextBatchL1Data{}
-	// we expect that the batch we're going to load in next should be in the db already because of the l1 block sync
-	// stage, if it is not there we need to panic as we're in a bad state
-	batchL2Data, err := hermezDb.GetL1BatchData(batchNumber)
-	if err != nil {
-		return nextData, err
-	}
-
-	if len(batchL2Data) == 0 {
-		// end of the line for batch recovery so return empty
-		return nextData, nil
-	}
-
-	nextData.Coinbase = common.BytesToAddress(batchL2Data[:length.Addr])
-	nextData.L1InfoRoot = common.BytesToHash(batchL2Data[length.Addr : length.Addr+length.Hash])
-	tsBytes := batchL2Data[length.Addr+length.Hash : length.Addr+length.Hash+8]
-	nextData.LimitTimestamp = binary.BigEndian.Uint64(tsBytes)
-	batchL2Data = batchL2Data[length.Addr+length.Hash+8:]
-
-	nextData.DecodedData, err = zktx.DecodeBatchL2Blocks(batchL2Data, forkId)
-	if err != nil {
-		return nextData, err
-	}
-
-	// no data means no more work to do - end of the line
-	if len(nextData.DecodedData) == 0 {
-		return nextData, nil
-	}
-
-	nextData.IsWorkRemaining = true
-	transactionsInBatch := 0
-	for _, batch := range nextData.DecodedData {
-		transactionsInBatch += len(batch.Transactions)
-	}
-	if transactionsInBatch == 0 {
-		// we need to check if this batch should simply be empty or not so we need to check against the
-		// highest known batch number to see if we have work to do still
-		highestKnown, err := hermezDb.GetLastL1BatchData()
-		if err != nil {
-			return nextData, err
-		}
-		if batchNumber >= highestKnown {
-			nextData.IsWorkRemaining = false
-		}
-	}
-
-	return nextData, err
 }
 
 func extractTransactionsFromSlot(slot *types2.TxsRlp) ([]types.Transaction, error) {
@@ -174,6 +98,14 @@ func extractTransactionsFromSlot(slot *types2.TxsRlp) ([]types.Transaction, erro
 	return transactions, nil
 }
 
+type overflowType uint8
+
+const (
+	overflowNone overflowType = iota
+	overflowCounters
+	overflowGas
+)
+
 func attemptAddTransaction(
 	cfg SequenceBlockCfg,
 	sdb *stageDb,
@@ -185,14 +117,32 @@ func attemptAddTransaction(
 	effectiveGasPrice uint8,
 	l1Recovery bool,
 	forkId, l1InfoIndex uint64,
-) (*types.Receipt, bool, error) {
-	txCounters := vm.NewTransactionCounter(transaction, sdb.smt.GetDepth(), cfg.zk.VirtualCountersSmtReduction, cfg.zk.ShouldCountersBeUnlimited(l1Recovery))
-	overflow, err := batchCounters.AddNewTransactionCounters(txCounters)
-	if err != nil {
-		return nil, false, err
+	blockDataSizeChecker *BlockDataChecker,
+) (*types.Receipt, *core.ExecutionResult, overflowType, error) {
+	var batchDataOverflow, overflow bool
+	var err error
+
+	txCounters := vm.NewTransactionCounter(transaction, sdb.smt.GetDepth(), uint16(forkId), cfg.zk.VirtualCountersSmtReduction, cfg.zk.ShouldCountersBeUnlimited(l1Recovery))
+	overflow, err = batchCounters.AddNewTransactionCounters(txCounters)
+
+	// run this only once the first time, do not add it on rerun
+	if blockDataSizeChecker != nil {
+		txL2Data, err := txCounters.GetL2DataCache()
+		if err != nil {
+			return nil, nil, overflowNone, err
+		}
+		batchDataOverflow = blockDataSizeChecker.AddTransactionData(txL2Data)
+		if batchDataOverflow {
+			log.Info("BatchL2Data limit reached. Not adding last transaction", "txHash", transaction.Hash())
+		}
 	}
-	if overflow && !l1Recovery {
-		return nil, true, nil
+	if err != nil {
+		return nil, nil, overflowNone, err
+	}
+	anyOverflow := overflow || batchDataOverflow
+	if anyOverflow && !l1Recovery {
+		log.Debug("Transaction preexecute overflow detected", "txHash", transaction.Hash(), "coutners", batchCounters.CombineCollectorsNoChanges().UsedAsString())
+		return nil, nil, overflowCounters, nil
 	}
 
 	gasPool := new(core.GasPool).AddGas(transactionGasLimit)
@@ -202,8 +152,11 @@ func attemptAddTransaction(
 
 	// TODO: possibly inject zero tracer here!
 
+	snapshot := ibs.Snapshot()
 	ibs.Prepare(transaction.Hash(), common.Hash{}, 0)
 	evm := vm.NewZkEVM(*blockContext, evmtypes.TxContext{}, ibs, cfg.chainConfig, *cfg.zkVmConfig)
+
+	gasUsed := header.GasUsed
 
 	receipt, execResult, err := core.ApplyTransaction_zkevm(
 		cfg.chainConfig,
@@ -214,31 +167,48 @@ func attemptAddTransaction(
 		noop,
 		header,
 		transaction,
-		&header.GasUsed,
+		&gasUsed,
 		effectiveGasPrice,
+		false,
 	)
 
 	if err != nil {
-		return nil, false, err
+		return nil, nil, overflowNone, err
 	}
 
-	if forkId <= uint64(constants.ForkID7Etrog) && errors.Is(execResult.Err, vm.ErrUnsupportedPrecompile) {
-		receipt.Status = 1
+	if err = txCounters.ProcessTx(ibs, execResult.ReturnData); err != nil {
+		return nil, nil, overflowNone, err
 	}
+
+	batchCounters.UpdateExecutionAndProcessingCountersCache(txCounters)
+	// now that we have executed we can check again for an overflow
+	if overflow, err = batchCounters.CheckForOverflow(l1InfoIndex != 0); err != nil {
+		return nil, nil, overflowNone, err
+	}
+
+	counters := batchCounters.CombineCollectorsNoChanges().UsedAsString()
+	if overflow {
+		log.Debug("Transaction overflow detected", "txHash", transaction.Hash(), "coutners", counters)
+		ibs.RevertToSnapshot(snapshot)
+		return nil, nil, overflowCounters, nil
+	}
+	if gasUsed > header.GasLimit {
+		log.Debug("Transaction overflows block gas limit", "txHash", transaction.Hash(), "txGas", receipt.GasUsed, "blockGasUsed", header.GasUsed)
+		ibs.RevertToSnapshot(snapshot)
+		return nil, nil, overflowGas, nil
+	}
+	log.Debug("Transaction added", "txHash", transaction.Hash(), "coutners", counters)
+
+	// add the gas only if not reverted. This should not be moved above the overflow check
+	header.GasUsed = gasUsed
 
 	// we need to keep hold of the effective percentage used
 	// todo [zkevm] for now we're hard coding to the max value but we need to calc this properly
 	if err = sdb.hermezDb.WriteEffectiveGasPricePercentage(transaction.Hash(), effectiveGasPrice); err != nil {
-		return nil, false, err
+		return nil, nil, overflowNone, err
 	}
 
-	err = txCounters.ProcessTx(ibs, execResult.ReturnData)
-	if err != nil {
-		return nil, false, err
-	}
+	ibs.FinalizeTx(evm.ChainRules(), noop)
 
-	// now that we have executed we can check again for an overflow
-	overflow, err = batchCounters.CheckForOverflow(l1InfoIndex != 0)
-
-	return receipt, overflow, err
+	return receipt, execResult, overflowNone, nil
 }

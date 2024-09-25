@@ -64,6 +64,9 @@ import (
 
 	"github.com/ledgerwatch/erigon/chain"
 
+	"net/url"
+	"path"
+
 	"github.com/0xPolygonHermez/zkevm-data-streamer/datastreamer"
 	log2 "github.com/0xPolygonHermez/zkevm-data-streamer/log"
 	"github.com/ledgerwatch/erigon/cl/clparams"
@@ -114,10 +117,12 @@ import (
 	"github.com/ledgerwatch/erigon/zk/contracts"
 	"github.com/ledgerwatch/erigon/zk/datastream/client"
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
+	"github.com/ledgerwatch/erigon/zk/l1_cache"
 	"github.com/ledgerwatch/erigon/zk/legacy_executor_verifier"
 	zkStages "github.com/ledgerwatch/erigon/zk/stages"
 	"github.com/ledgerwatch/erigon/zk/syncer"
 	txpool2 "github.com/ledgerwatch/erigon/zk/txpool"
+	"github.com/ledgerwatch/erigon/zk/utils"
 	"github.com/ledgerwatch/erigon/zk/witness"
 	"github.com/ledgerwatch/erigon/zkevm/etherman"
 )
@@ -196,6 +201,7 @@ type Ethereum struct {
 	dataStream      *datastreamer.StreamServer
 	l1Syncer        *syncer.L1Syncer
 	etherManClients []*etherman.Client
+	l1Cache         *l1_cache.L1Cache
 
 	preStartTasks *PreStartTasks
 }
@@ -635,7 +641,19 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	}()
 
+	tx, err := backend.chainDB.BeginRw(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
 	if !config.DeprecatedTxPool.Disable {
+		// we need to start the pool before stage loop itself
+		// the pool holds the info about how execution stage should work - as regular or as limbo recovery
+		if err := backend.txPool2.StartIfNotStarted(ctx, backend.txPool2DB, tx); err != nil {
+			return nil, err
+		}
+
 		backend.txPool2Fetch.ConnectCore()
 		backend.txPool2Fetch.ConnectSentries()
 		var newTxsBroadcaster *txpool2.NewSlotsStreams
@@ -696,19 +714,15 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	backend.ethBackendRPC, backend.miningRPC, backend.stateChangesClient = ethBackendRPC, miningRPC, stateDiffClient
 
-	tx, err := backend.chainDB.BeginRw(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
 	// create buckets
-	if err := hermez_db.CreateHermezBuckets(tx); err != nil {
+	if err := createBuckets(tx); err != nil {
 		return nil, err
 	}
 
-	if err := db.CreateEriDbBuckets(tx); err != nil {
-		return nil, err
+	// record erigon version
+	err = recordStartupVersionInDb(tx)
+	if err != nil {
+		log.Warn("failed to record erigon version in db", "err", err)
 	}
 
 	executionProgress, err := stages.GetStageProgress(tx, stages.Execution)
@@ -728,7 +742,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 				Outputs:     nil,
 			}
 			// todo [zkevm] read the stream version from config and figure out what system id is used for
-			backend.dataStream, err = datastreamer.NewServer(uint16(httpCfg.DataStreamPort), uint8(backend.config.DatastreamVersion), 1, datastreamer.StreamType(1), file, logConfig)
+			backend.dataStream, err = datastreamer.NewServer(uint16(httpCfg.DataStreamPort), uint8(backend.config.DatastreamVersion), 1, datastreamer.StreamType(1), file, httpCfg.DataStreamWriteTimeout, httpCfg.DataStreamInactivityTimeout, httpCfg.DataStreamInactivityCheckInterval, logConfig)
 			if err != nil {
 				return nil, err
 			}
@@ -739,9 +753,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			latestHeader := backend.dataStream.GetHeader()
 			if latestHeader.TotalEntries == 0 {
 				log.Info("[dataStream] setting the stream progress to 0")
-				if err := stages.SaveStageProgress(tx, stages.DataStream, 0); err != nil {
-					return nil, err
-				}
 				backend.preStartTasks.WarmUpDataStream = true
 			}
 		}
@@ -749,10 +760,25 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		// entering ZK territory!
 		cfg := backend.config
 
-		// update the chain config with the zero gas from the flags
-		backend.chainConfig.SupportGasless = cfg.Gasless
-
+		backend.chainConfig.AllowFreeTransactions = cfg.AllowFreeTransactions
 		l1Urls := strings.Split(cfg.L1RpcUrl, ",")
+
+		if cfg.Zk.L1CacheEnabled {
+			l1Cache, err := l1_cache.NewL1Cache(ctx, path.Join(stack.DataDir(), "l1cache"), cfg.Zk.L1CachePort)
+			if err != nil {
+				return nil, err
+			}
+			backend.l1Cache = l1Cache
+
+			var cacheL1Urls []string
+			for _, l1Url := range l1Urls {
+				encoded := url.QueryEscape(l1Url)
+				cacheL1Url := fmt.Sprintf("http://localhost:%d?endpoint=%s&chainid=%d", cfg.Zk.L1CachePort, encoded, cfg.L2ChainId)
+				cacheL1Urls = append(cacheL1Urls, cacheL1Url)
+			}
+			l1Urls = cacheL1Urls
+		}
+
 		backend.etherManClients = make([]*etherman.Client, len(l1Urls))
 		for i, url := range l1Urls {
 			backend.etherManClients[i] = newEtherMan(cfg, chainConfig.ChainName, url)
@@ -761,24 +787,37 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		isSequencer := sequencer.IsSequencer()
 
 		// if the L1 block sync is set we're in recovery so can't run as a sequencer
-		if cfg.L1SyncStartBlock > 0 && !isSequencer {
-			panic("you cannot launch in l1 sync mode as an RPC node")
+		if cfg.L1SyncStartBlock > 0 {
+			if !isSequencer {
+				panic("you cannot launch in l1 sync mode as an RPC node")
+			}
+			log.Info("Starting sequencer in L1 recovery mode", "startBlock", cfg.L1SyncStartBlock)
 		}
+
+		seqAndVerifTopics := [][]libcommon.Hash{{
+			contracts.SequencedBatchTopicPreEtrog,
+			contracts.SequencedBatchTopicEtrog,
+			contracts.RollbackBatchesTopic,
+			contracts.VerificationTopicPreEtrog,
+			contracts.VerificationTopicEtrog,
+			contracts.VerificationValidiumTopicEtrog,
+		}}
+
+		seqAndVerifL1Contracts := []libcommon.Address{cfg.AddressRollup, cfg.AddressAdmin, cfg.AddressZkevm}
 
 		var l1Topics [][]libcommon.Hash
 		var l1Contracts []libcommon.Address
 		if isSequencer {
-			l1Topics = [][]libcommon.Hash{{contracts.InitialSequenceBatchesTopic}}
-			l1Contracts = []libcommon.Address{cfg.AddressZkevm}
-		} else {
 			l1Topics = [][]libcommon.Hash{{
-				contracts.SequencedBatchTopicPreEtrog,
-				contracts.SequencedBatchTopicEtrog,
-				contracts.VerificationTopicPreEtrog,
-				contracts.VerificationTopicEtrog,
-				contracts.VerificationValidiumTopicEtrog,
+				contracts.InitialSequenceBatchesTopic,
+				contracts.AddNewRollupTypeTopic,
+				contracts.CreateNewRollupTopic,
+				contracts.UpdateRollupTopic,
 			}}
-			l1Contracts = []libcommon.Address{cfg.AddressRollup, cfg.AddressAdmin, cfg.AddressZkevm}
+			l1Contracts = []libcommon.Address{cfg.AddressZkevm, cfg.AddressRollup}
+		} else {
+			l1Topics = seqAndVerifTopics
+			l1Contracts = seqAndVerifL1Contracts
 		}
 
 		ethermanClients := make([]syncer.IEtherman, len(backend.etherManClients))
@@ -786,7 +825,18 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			ethermanClients[i] = c.EthClient
 		}
 
+		seqVerSyncer := syncer.NewL1Syncer(
+			ctx,
+			ethermanClients,
+			seqAndVerifL1Contracts,
+			seqAndVerifTopics,
+			cfg.L1BlockRange,
+			cfg.L1QueryDelay,
+			cfg.L1HighestBlockType,
+		)
+
 		backend.l1Syncer = syncer.NewL1Syncer(
+			ctx,
 			ethermanClients,
 			l1Contracts,
 			l1Topics,
@@ -795,7 +845,22 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			cfg.L1HighestBlockType,
 		)
 
+		log.Info("Rollup ID", "rollupId", cfg.L1RollupId)
+
+		// check contract addresses in config against L1
+		if cfg.Zk.L1ContractAddressCheck {
+			success, err := l1ContractAddressCheck(ctx, cfg.Zk, backend.l1Syncer)
+			if !success || err != nil {
+				//log.Warn("Contract address check failed", "success", success, "err", err)
+				panic("Contract address check failed")
+			}
+			log.Info("Contract address check passed")
+		} else {
+			log.Info("Contract address check skipped")
+		}
+
 		l1InfoTreeSyncer := syncer.NewL1Syncer(
+			ctx,
 			ethermanClients,
 			[]libcommon.Address{cfg.AddressGerManager},
 			[][]libcommon.Hash{{contracts.UpdateL1InfoTreeTopic}},
@@ -812,10 +877,11 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 				backend.agg,
 				backend.blockReader,
 				backend.chainConfig,
+				backend.config.Zk,
 				backend.engine,
 			)
 
-			var legacyExecutors []legacy_executor_verifier.ILegacyExecutor
+			var legacyExecutors []*legacy_executor_verifier.Executor = make([]*legacy_executor_verifier.Executor, 0, len(cfg.ExecutorUrls))
 			if len(cfg.ExecutorUrls) > 0 && cfg.ExecutorUrls[0] != "" {
 				levCfg := legacy_executor_verifier.Config{
 					GrpcUrls:              cfg.ExecutorUrls,
@@ -835,7 +901,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 				backend.chainConfig,
 				backend.chainDB,
 				witnessGenerator,
-				backend.l1Syncer,
 				backend.dataStream,
 			)
 
@@ -849,9 +914,12 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			backend.txPool2.ForceUpdateLatestBlock(executionProgress)
 
 			l1BlockSyncer := syncer.NewL1Syncer(
+				ctx,
 				ethermanClients,
-				[]libcommon.Address{cfg.AddressZkevm},
-				[][]libcommon.Hash{{contracts.SequenceBatchesTopic}},
+				[]libcommon.Address{cfg.AddressZkevm, cfg.AddressRollup},
+				[][]libcommon.Hash{{
+					contracts.SequenceBatchesTopic,
+				}},
 				cfg.L1BlockRange,
 				cfg.L1QueryDelay,
 				cfg.L1HighestBlockType,
@@ -870,6 +938,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 				backend.engine,
 				backend.dataStream,
 				backend.l1Syncer,
+				seqVerSyncer,
 				l1InfoTreeSyncer,
 				l1BlockSyncer,
 				backend.txPool2,
@@ -930,6 +999,35 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	return backend, nil
 }
 
+func createBuckets(tx kv.RwTx) error {
+	if err := hermez_db.CreateHermezBuckets(tx); err != nil {
+		return err
+	}
+
+	if err := db.CreateEriDbBuckets(tx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func recordStartupVersionInDb(tx kv.RwTx) error {
+	version := utils.GetVersion()
+
+	hdb := hermez_db.NewHermezDb(tx)
+	written, err := hdb.WriteErigonVersion(version, time.Now())
+	if err != nil {
+		return err
+	}
+
+	if !written {
+		log.Info(fmt.Sprintf("Erigon started at version %s, version already run", version))
+	} else {
+		log.Info(fmt.Sprintf("Erigon started at version %s, for the first time", version))
+	}
+	return nil
+}
+
 // creates an EtherMan instance with default parameters
 func newEtherMan(cfg *ethconfig.Config, l2ChainName, url string) *etherman.Client {
 	ethmanConf := etherman.Config{
@@ -952,23 +1050,7 @@ func newEtherMan(cfg *ethconfig.Config, l2ChainName, url string) *etherman.Clien
 
 // creates a datastream client with default parameters
 func initDataStreamClient(ctx context.Context, cfg *ethconfig.Zk, latestForkId uint16) *client.StreamClient {
-	// datastream
-	// Create client
-	log.Info("Starting datastream client...")
-	// retry connection
-	datastreamClient := client.NewClient(ctx, cfg.L2DataStreamerUrl, cfg.DatastreamVersion, cfg.L2DataStreamerTimeout, latestForkId)
-
-	for i := 0; i < 30; i++ {
-		// Start client (connect to the server)
-		if err := datastreamClient.Start(); err != nil {
-			log.Warn(fmt.Sprintf("Error when starting datastream client, retrying... Error: %s", err))
-			time.Sleep(1 * time.Second)
-		} else {
-			log.Info("Datastream client initialized...")
-			return datastreamClient
-		}
-	}
-	panic("datastream client could not be initialized")
+	return client.NewClient(ctx, cfg.L2DataStreamerUrl, cfg.DatastreamVersion, cfg.L2DataStreamerTimeout, latestForkId)
 }
 
 func (backend *Ethereum) Init(stack *node.Node, config *ethconfig.Config) error {
@@ -1057,7 +1139,7 @@ func (s *Ethereum) PreStart() error {
 		// so here we loop and take a brief pause waiting for it to be ready
 		attempts := 0
 		for {
-			_, err = zkStages.CatchupDatastream("stream-catchup", tx, s.dataStream, s.chainConfig.ChainID.Uint64(), s.config.DatastreamVersion)
+			_, err = zkStages.CatchupDatastream(s.sentryCtx, "stream-catchup", tx, s.dataStream, s.chainConfig.ChainID.Uint64())
 			if err != nil {
 				if errors.Is(err, datastreamer.ErrAtomicOpNotAllowed) {
 					attempts++
@@ -1469,4 +1551,43 @@ func checkPortIsFree(addr string) (free bool) {
 	}
 	c.Close()
 	return false
+}
+
+func l1ContractAddressCheck(ctx context.Context, cfg *ethconfig.Zk, l1BlockSyncer *syncer.L1Syncer) (bool, error) {
+	l1AddrRollup, err := l1BlockSyncer.CallRollupManager(ctx, &cfg.AddressZkevm)
+	if err != nil {
+		return false, err
+	}
+	if l1AddrRollup != cfg.AddressRollup {
+		log.Warn("L1 contract address check failed (AddressRollup)", "expected", cfg.AddressRollup, "actual", l1AddrRollup)
+		return false, nil
+	}
+
+	l1AddrAdmin, err := l1BlockSyncer.CallAdmin(ctx, &cfg.AddressZkevm)
+	if err != nil {
+		return false, err
+	}
+	if l1AddrAdmin != cfg.AddressAdmin {
+		log.Warn("L1 contract address check failed (AddressAdmin)", "expected", cfg.AddressAdmin, "actual", l1AddrAdmin)
+		return false, nil
+	}
+
+	l1AddrGerManager, err := l1BlockSyncer.CallGlobalExitRootManager(ctx, &cfg.AddressZkevm)
+	if err != nil {
+		return false, err
+	}
+	if l1AddrGerManager != cfg.AddressGerManager {
+		log.Warn("L1 contract address check failed (AddressGerManager)", "expected", cfg.AddressGerManager, "actual", l1AddrGerManager)
+		return false, nil
+	}
+
+	l1AddrSequencer, err := l1BlockSyncer.CallTrustedSequencer(ctx, &cfg.AddressZkevm)
+	if err != nil {
+		return false, err
+	}
+	if l1AddrSequencer != cfg.AddressSequencer {
+		log.Warn("L1 contract address check failed (AddressSequencer)", "expected", cfg.AddressSequencer, "actual", l1AddrSequencer)
+		return false, nil
+	}
+	return true, nil
 }

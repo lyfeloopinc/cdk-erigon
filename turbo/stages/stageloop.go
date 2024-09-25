@@ -20,6 +20,7 @@ import (
 
 	"github.com/ledgerwatch/erigon/chain"
 	"github.com/ledgerwatch/erigon/zk"
+	"github.com/ledgerwatch/erigon/zk/sequencer"
 
 	"github.com/ledgerwatch/erigon/consensus"
 
@@ -105,9 +106,6 @@ func StageLoop(
 			if !errors.Is(err, zk.ErrLimboState) {
 				log.Error("Staged Sync", "err", err)
 			}
-			if recoveryErr := hd.RecoverFromDb(db); recoveryErr != nil {
-				log.Error("Failed to recover header sentriesClient", "err", recoveryErr)
-			}
 			time.Sleep(500 * time.Millisecond) // just to avoid too much similar errors in logs
 			continue
 		}
@@ -151,6 +149,10 @@ func StageLoopStep(ctx context.Context, chainConfig *chain.Config, db kv.RwDB, s
 	}
 	canRunCycleInOneTransaction := !initialCycle
 
+	if sequencer.IsSequencer() {
+		canRunCycleInOneTransaction = false // we need to commit when sequencer each run
+	}
+
 	var tx kv.RwTx // on this variable will run sync cycle.
 	if canRunCycleInOneTransaction {
 		// -- Process new blocks + commit(no_sync)
@@ -162,7 +164,7 @@ func StageLoopStep(ctx context.Context, chainConfig *chain.Config, db kv.RwDB, s
 	}
 
 	if notifications != nil && notifications.Accumulator != nil && canRunCycleInOneTransaction {
-		stateVersion, err := rawdb.GetStateVersion(tx)
+		_, stateVersion, err := rawdb.GetLatestStateVersion(tx)
 		if err != nil {
 			log.Error("problem reading plain state version", "err", err)
 		}
@@ -209,7 +211,7 @@ func StageLoopStep(ctx context.Context, chainConfig *chain.Config, db kv.RwDB, s
 
 		// update the accumulator with a new plain state version so the cache can be notified that
 		// state has moved on
-		if plainStateVersion, err = rawdb.GetStateVersion(tx); err != nil {
+		if _, plainStateVersion, err = rawdb.GetLatestStateVersion(tx); err != nil {
 			return err
 		}
 		notifications.Accumulator.SetStateID(plainStateVersion)

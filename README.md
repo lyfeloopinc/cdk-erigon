@@ -4,16 +4,22 @@ cdk-erigon is a fork of Erigon, currently in Alpha, optimized for syncing with t
 
 ***
 ## Release Roadmap
-- **v0.9.x**: Support for Cardona testnet
-- **v1.x.x**: Support for Mainnet
+- **v1.1.x**: RPC (full support)
+- **v2.x.x**: Sequencer (full support)
 - **v3.x.x**: Erigon 3 based (snapshot support)
 
 ***
 
+## Hardware requirements
+
+* A Linux-based OS (e.g., Ubuntu Server 22.04 LTS).
+* At least 32GB RAM with a 4-core CPU.
+* Both Apple Silicon and AMD64 are supported.
+
 ## Chain/Fork Support
 Current status of cdk-erigon's support for running various chains and fork ids:
 
-- zkEVM Cardona testnet — beta support
+- zkEVM Cardona testnet — full support
 - zkEVM mainnet — beta support
 - CDK Chains - beta support (forkid.9 and above)
 
@@ -58,6 +64,16 @@ In order to retrieve data from the L1, the L1 syncer must be configured to know 
 
 - `zkevm.l1-highest-block-type` which defaults to retrieving the 'finalized' block, however there are cases where you may wish to pass 'safe' or 'latest'.
 
+### L1 Cache
+The node can cache the L1 requests/responses to speed up the sync and enable quicker responses to RPC requests requiring for example OldAccInputHash from the L1. This is enabled by default,
+but can be controlled via the following flags:
+
+- `zkevm.l1-cache-enabled` - defaults to true, set to false to disable the cache
+- `zkevm.l1-cache-port` - the port the cache server will run on, defaults to 6969
+
+To transplant the cache between datadirs, the `l1cache` dir can be copied. To use an upstream cdk-erigon node's L1 cache, the zkevm.l1-cache-enabled can be set to false, and the node provided the endpoint of the cache,
+instead of a regular L1 URL. e.g. `zkevm.l1-rpc-url=http://myerigonnode:6969?endpoint=http%3A%2F%2Fsepolia-rpc.com&chainid=2440`. NB: this node must be syncing the same network for any benefit!
+
 ## Sequencer (WIP)
 
 Enable Sequencer: `CDK_ERIGON_SEQUENCER=1 ./build/bin/cdk-erigon <flags>`
@@ -90,9 +106,13 @@ In order to enable the zkevm_ namespace, please add 'zkevm' to the http.api flag
 - `zkevm_getFullBlockByNumber`
 - `zkevm_virtualCounters`
 - `zkevm_traceTransactionCounters`
+- `zkevm_getVersionHistory` - returns cdk-erigon versions and timestamps of their deployment (stored in datadir)
 
 ### Supported (remote)
 - `zkevm_getBatchByNumber`
+
+### Configurable
+- `zkevm_getBatchWitness` - concurrency can be limited with `zkevm.rpc-get-batch-witness-concurrency-limit` flag which defaults to 1. Use 0 for no limit.
 
 ### Not yet supported
 - `zkevm_getNativeBlockHashesInRange`
@@ -101,10 +121,13 @@ In order to enable the zkevm_ namespace, please add 'zkevm' to the http.api flag
 - `zkevm_getBroadcastURI` - it was removed by zkEvm
 ***
 
-## Limitations/Warnings
+## Limitations/Warnings/Performance
 
 - The golden poseidon hashing will be much faster on x86, so developers on Mac may experience slowness on Apple silicone
 - Falling behind the network significantly will cause a SMT rebuild - which will take some time for longer chains
+
+Initial SMT build performance can be increased if machine has enough RAM:
+- `zkevm.smt-regenerate-in-memory` - setting this to true will use RAM to build the SMT rather than disk which is faster, but requires enough RAM (OOM kill potential)
 
 ***
 
@@ -183,10 +206,14 @@ Sequencer specific config:
 - `zkevm.executor-urls`: A csv list of the executor URLs.  These will be used in a round robbin fashion by the sequencer
 - `zkevm.executor-strict`: Defaulted to true, but can be set to false when running the sequencer without verifications (use with extreme caution)
 - `zkevm.witness-full`: Defaulted to true.  Controls whether the full or partial witness is used with the executor.
-- `zkevm.sequencer-initial-fork-id`: The fork id to start the network with.
+- `zkevm.reject-smart-contract-deployments`: Defaulted to false.  Controls whether smart contract deployments are rejected by the TxPool.
+
+Resource Utilisation config:
+- `zkevm.smt-regenerate-in-memory`: As documented above, allows SMT regeneration in memory if machine has enough RAM, for a speedup in initial sync.
 
 Useful config entries:
 - `zkevm.sync-limit`: This will ensure the network only syncs to a given block height.
+- `debug.timers`: This will enable debug timers in the logs to help with performance tuning. Recording timings of witness generation, etc. at INFO level.
 
 ***
 
@@ -199,6 +226,13 @@ Useful config entries:
 | zkEVM Cardona | 2442     | 9      | [Link](https://hackmd.io/Ug9pB613SvevJgnXRC4YJA) | [Cardona RPC](https://rpc.cardona.zkevm-rpc.com/) | Sepolia          | `0x32d33D5137a7cFFb54c5Bf8371172bcEc5f310ff` |
 
 ***
+
+## Health Checks
+
+- Node version: `curl -X POST --data '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":1}' {{node url}}` - returns cdk-erigon version
+- Node syncing status: `curl -X POST --data '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' {{node url}}` - returns stages process or false
+- Health check: GET request with header `X-ERIGON-HEALTHCHECK: synced` - returns 200 response if OK
+
 
 ## Additional Resources
 

@@ -6,19 +6,27 @@ import (
 	"time"
 
 	"github.com/ledgerwatch/log/v3"
+	"sync"
 )
 
 var ErrLimboState = errors.New("Calculating limbo state")
 
 // prints progress every 10 seconds
 // returns a channel to send progress to, and a function to stop the printer routine
-func ProgressPrinter(message string, total uint64) (chan uint64, func()) {
+func ProgressPrinter(message string, total uint64, quiet bool) (chan uint64, func()) {
 	progress := make(chan uint64)
 	ctDone := make(chan bool)
+	var once sync.Once
+
+	cleanup := func() {
+		once.Do(func() {
+			close(ctDone)
+		})
+	}
 
 	go func() {
 		defer close(progress)
-		defer close(ctDone)
+		defer cleanup()
 
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -33,8 +41,11 @@ func ProgressPrinter(message string, total uint64) (chan uint64, func()) {
 				if total > 0 {
 					pct = (pc * 100) / total
 				}
+				if pct == 100 {
+					log.Info(fmt.Sprintf("%s: %d/%d (%d%%)", message, pc, total, pct))
+				}
 			case <-ticker.C:
-				if pc > 0 {
+				if pc > 0 && !quiet {
 					log.Info(fmt.Sprintf("%s: %d/%d (%d%%)", message, pc, total, pct))
 				}
 			case <-ctDone:
@@ -43,7 +54,7 @@ func ProgressPrinter(message string, total uint64) (chan uint64, func()) {
 		}
 	}()
 
-	return progress, func() { ctDone <- true }
+	return progress, cleanup
 }
 
 // prints progress every 10 seconds
@@ -51,10 +62,17 @@ func ProgressPrinter(message string, total uint64) (chan uint64, func()) {
 func ProgressPrinterWithoutTotal(message string) (chan uint64, func()) {
 	progress := make(chan uint64)
 	ctDone := make(chan bool)
+	var once sync.Once
+
+	cleanup := func() {
+		once.Do(func() {
+			close(ctDone)
+		})
+	}
 
 	go func() {
 		defer close(progress)
-		defer close(ctDone)
+		defer cleanup()
 
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -75,7 +93,7 @@ func ProgressPrinterWithoutTotal(message string) (chan uint64, func()) {
 		}
 	}()
 
-	return progress, func() { ctDone <- true }
+	return progress, cleanup
 }
 
 // prints progress every 10 seconds
@@ -83,10 +101,17 @@ func ProgressPrinterWithoutTotal(message string) (chan uint64, func()) {
 func ProgressPrinterWithoutValues(message string, total uint64) (chan uint64, func()) {
 	progress := make(chan uint64)
 	ctDone := make(chan bool)
+	var once sync.Once
+
+	cleanup := func() {
+		once.Do(func() {
+			close(ctDone)
+		})
+	}
 
 	go func() {
 		defer close(progress)
-		defer close(ctDone)
+		defer cleanup()
 
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -111,5 +136,5 @@ func ProgressPrinterWithoutValues(message string, total uint64) (chan uint64, fu
 		}
 	}()
 
-	return progress, func() { ctDone <- true }
+	return progress, cleanup
 }

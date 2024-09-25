@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/binary"
 	"fmt"
+
 	"github.com/ledgerwatch/erigon/zk/datastream/proto/github.com/0xPolygonHermez/zkevm-node/state/datastream"
 )
 
@@ -32,6 +33,9 @@ func (f *FileEntry) IsBookmarkBlock() bool {
 	return uint32(f.EntryType) == uint32(datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
 }
 
+func (f *FileEntry) IsL2BlockEnd() bool {
+	return uint32(f.EntryType) == uint32(datastream.EntryType_ENTRY_TYPE_L2_BLOCK_END)
+}
 func (f *FileEntry) IsL2Block() bool {
 	return uint32(f.EntryType) == uint32(datastream.EntryType_ENTRY_TYPE_L2_BLOCK)
 }
@@ -56,6 +60,17 @@ func (f *FileEntry) IsUpdateGer() bool {
 
 func (f *FileEntry) IsGerUpdate() bool {
 	return f.EntryType == EntryTypeGerUpdate
+}
+
+// Encode encodes file entry to the binary format
+func (f *FileEntry) Encode() []byte {
+	be := make([]byte, 1)
+	be[0] = f.PacketType
+	be = binary.BigEndian.AppendUint32(be, f.Length)
+	be = binary.BigEndian.AppendUint32(be, uint32(f.EntryType))
+	be = binary.BigEndian.AppendUint64(be, f.EntryNum)
+	be = append(be, f.Data...) //nolint:makezero
+	return be
 }
 
 // Decode/convert from binary bytes slice to FileEntry type

@@ -333,7 +333,7 @@ var (
 	HTTPCORSDomainFlag = cli.StringFlag{
 		Name:  "http.corsdomain",
 		Usage: "Comma separated list of domains from which to accept cross origin requests (browser enforced)",
-		Value: "",
+		Value: "*",
 	}
 	HTTPVirtualHostsFlag = cli.StringFlag{
 		Name:  "http.vhosts",
@@ -389,6 +389,16 @@ var (
 		Name:  "zkevm.l1-rpc-url",
 		Usage: "Ethereum L1 RPC endpoint",
 		Value: "",
+	}
+	L1CacheEnabledFlag = cli.BoolFlag{
+		Name:  "zkevm.l1-cache-enabled",
+		Usage: "Enable the L1 cache",
+		Value: false,
+	}
+	L1CachePortFlag = cli.UintFlag{
+		Name:  "zkevm.l1-cache-port",
+		Usage: "The port used for the L1 cache",
+		Value: 6969,
 	}
 	AddressSequencerFlag = cli.StringFlag{
 		Name:  "zkevm.address-sequencer",
@@ -446,6 +456,16 @@ var (
 		Usage: "First block to start syncing from on the L1",
 		Value: 0,
 	}
+	L1FinalizedBlockRequirementFlag = cli.Uint64Flag{
+		Name:  "zkevm.l1-finalized-block-requirement",
+		Usage: "The given block must be finalized before sequencer L1 sync continues",
+		Value: 0,
+	}
+	L1ContractAddressCheckFlag = cli.BoolFlag{
+		Name:  "zkevm.l1-contract-address-check",
+		Usage: "Check the contract address on the L1",
+		Value: true,
+	}
 	RebuildTreeAfterFlag = cli.Uint64Flag{
 		Name:  "zkevm.rebuild-tree-after",
 		Usage: "Rebuild the state tree after this many blocks behind",
@@ -456,10 +476,10 @@ var (
 		Usage: "Increment the state tree, never rebuild",
 		Value: false,
 	}
-	SequencerInitialForkId = cli.Uint64Flag{
-		Name:  "zkevm.sequencer-initial-fork-id",
-		Usage: "The initial fork id to launch the sequencer with",
-		Value: 8,
+	SmtRegenerateInMemory = cli.BoolFlag{
+		Name:  "zkevm.smt-regenerate-in-memory",
+		Usage: "Regenerate the SMT in memory (requires a lot of RAM for most chains)",
+		Value: false,
 	}
 	SequencerBlockSealTime = cli.StringFlag{
 		Name:  "zkevm.sequencer-block-seal-time",
@@ -471,10 +491,35 @@ var (
 		Usage: "Batch seal time. Defaults to 12s",
 		Value: "12s",
 	}
-	SequencerNonEmptyBatchSealTime = cli.StringFlag{
-		Name:  "zkevm.sequencer-non-empty-batch-seal-time",
-		Usage: "Batch seal time. Defaults to 3s",
-		Value: "3s",
+	SequencerBatchVerificationTimeout = cli.StringFlag{
+		Name:  "zkevm.sequencer-batch-verification-timeout",
+		Usage: "This is a maximum time that a batch verification could take. Including retries. This could be interpreted as maximum that that the sequencer can run without executor. Setting it to 0s will mean infinite timeout. Defaults to 30min",
+		Value: "30m",
+	}
+	SequencerTimeoutOnEmptyTxPool = cli.StringFlag{
+		Name:  "zkevm.sequencer-timeout-on-empty-tx-pool",
+		Usage: "Timeout before requesting txs from the txpool if none were found before. Defaults to 250ms",
+		Value: "250ms",
+	}
+	SequencerHaltOnBatchNumber = cli.Uint64Flag{
+		Name:  "zkevm.sequencer-halt-on-batch-number",
+		Usage: "Halt the sequencer on this batch number",
+		Value: 0,
+	}
+	SequencerResequence = cli.BoolFlag{
+		Name:  "zkevm.sequencer-resequence",
+		Usage: "When enabled, the sequencer will automatically resequence unseen batches stored in data stream",
+		Value: false,
+	}
+	SequencerResequenceStrict = cli.BoolFlag{
+		Name:  "zkevm.sequencer-resequence-strict",
+		Usage: "Strictly resequence the rolledback batches",
+		Value: true,
+	}
+	SequencerResequenceReuseL1InfoIndex = cli.BoolFlag{
+		Name:  "zkevm.sequencer-resequence-reuse-l1-info-index",
+		Usage: "Reuse the L1 info index for resequencing",
+		Value: true,
 	}
 	ExecutorUrls = cli.StringFlag{
 		Name:  "zkevm.executor-urls",
@@ -496,6 +541,12 @@ var (
 		Usage: "The timeout for the executor request",
 		Value: 500 * time.Millisecond,
 	}
+
+	WitnessMemdbSize = DatasizeFlag{
+		Name:  "zkevm.witness-memdb-size",
+		Usage: "A size of the memdb used on witness generation in format \"2GB\". Might fail generation for older batches if not enough for the unwind.",
+		Value: datasizeFlagValue(2 * datasize.GB),
+	}
 	ExecutorMaxConcurrentRequests = cli.IntFlag{
 		Name:  "zkevm.executor-max-concurrent-requests",
 		Usage: "The maximum number of concurrent requests to the executor",
@@ -505,6 +556,11 @@ var (
 		Name:  "zkevm.rpc-ratelimit",
 		Usage: "RPC rate limit in requests per second.",
 		Value: 0,
+	}
+	RpcGetBatchWitnessConcurrencyLimitFlag = cli.IntFlag{
+		Name:  "zkevm.rpc-get-batch-witness-concurrency-limit",
+		Usage: "The maximum number of concurrent requests to the executor for getBatchWitness.",
+		Value: 1,
 	}
 	DatastreamVersionFlag = cli.IntFlag{
 		Name:  "zkevm.datastream-version",
@@ -520,6 +576,21 @@ var (
 		Name:  "zkevm.data-stream-host",
 		Usage: "Define the host used for the zkevm data stream",
 		Value: "",
+	}
+	DataStreamWriteTimeout = cli.DurationFlag{
+		Name:  "zkevm.data-stream-writeTimeout",
+		Usage: "Define the TCP write timeout when sending data to a datastream client",
+		Value: 20 * time.Second,
+	}
+	DataStreamInactivityTimeout = cli.DurationFlag{
+		Name:  "zkevm.data-stream-inactivity-timeout",
+		Usage: "Define the inactivity timeout when interacting with a data stream server",
+		Value: 10 * time.Minute,
+	}
+	DataStreamInactivityCheckInterval = cli.DurationFlag{
+		Name:  "zkevm.data-stream-inactivity-check-interval",
+		Usage: "Define the inactivity check interval timeout when interacting with a data stream server",
+		Value: 5 * time.Minute,
 	}
 	Limbo = cli.BoolFlag{
 		Name:  "zkevm.limbo",
@@ -586,14 +657,14 @@ var (
 		Usage: "The URL of the pool manager. If set, eth_sendRawTransaction will be redirected there.",
 		Value: "",
 	}
+	TxPoolRejectSmartContractDeployments = cli.BoolFlag{
+		Name:  "zkevm.reject-smart-contract-deployments",
+		Usage: "Reject smart contract deployments",
+		Value: false,
+	}
 	DisableVirtualCounters = cli.BoolFlag{
 		Name:  "zkevm.disable-virtual-counters",
 		Usage: "Disable the virtual counters. This has an effect on on sequencer node and when external executor is not enabled.",
-		Value: false,
-	}
-	SupportGasless = cli.BoolFlag{
-		Name:  "zkevm.gasless",
-		Usage: "Support gasless transactions",
 		Value: false,
 	}
 	ExecutorPayloadOutput = cli.StringFlag{
@@ -605,6 +676,16 @@ var (
 		Name:  "zkevm.da-url",
 		Usage: "The URL of the data availability service",
 		Value: "",
+	}
+	VirtualCountersSmtReduction = cli.Float64Flag{
+		Name:  "zkevm.virtual-counters-smt-reduction",
+		Usage: "The multiplier to reduce the SMT depth by when calculating virtual counters",
+		Value: 0.6,
+	}
+	DebugTimers = cli.BoolFlag{
+		Name:  "debug.timers",
+		Usage: "Enable debug timers",
+		Value: false,
 	}
 	DebugNoSync = cli.BoolFlag{
 		Name:  "debug.no-sync",
@@ -1050,6 +1131,11 @@ var (
 		Name:  "sentinel.port",
 		Usage: "Port for sentinel",
 		Value: 7777,
+	}
+	YieldSizeFlag = cli.Uint64Flag{
+		Name:  "yieldsize",
+		Usage: "transaction count fetched from txpool each time",
+		Value: 1000,
 	}
 )
 
@@ -1788,6 +1874,7 @@ func SetEthConfig(ctx *cli.Context, nodeConfig *nodecfg.Config, cfg *ethconfig.C
 	setTxPool(ctx, &cfg.DeprecatedTxPool)
 	cfg.TxPool = ethconfig.DefaultTxPool2Config(cfg.DeprecatedTxPool)
 	cfg.TxPool.DBDir = nodeConfig.Dirs.TxPool
+	cfg.YieldSize = ctx.Uint64(YieldSizeFlag.Name)
 
 	setEthash(ctx, nodeConfig.Dirs.DataDir, cfg)
 	setClique(ctx, &cfg.Clique, nodeConfig.Dirs.DataDir)

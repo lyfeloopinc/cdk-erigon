@@ -3,12 +3,11 @@ package vm
 import (
 	"math/big"
 
-	"encoding/hex"
-
 	libcommon "github.com/gateway-fm/cdk-erigon-lib/common"
 	"github.com/holiman/uint256"
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/core/types"
+	"github.com/ledgerwatch/erigon/crypto"
 	"github.com/ledgerwatch/erigon/params"
 )
 
@@ -63,16 +62,9 @@ func opExtCodeHash_zkevm(pc *uint64, interpreter *EVMInterpreter, scope *ScopeCo
 
 func opBlockhash_zkevm(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	num := scope.Stack.Peek()
-	num64, overflow := num.Uint64WithOverflow()
-	if overflow {
-		num.Clear()
-		return nil, nil
-	}
 
 	ibs := interpreter.evm.IntraBlockState()
-	hash := ibs.GetBlockStateRoot(num64)
-
-	num.SetFromBig(hash.Big())
+	num.Set(ibs.GetBlockStateRoot(num))
 
 	return nil, nil
 }
@@ -171,47 +163,6 @@ func makeLog_zkevm(size int, logIndexPerTx bool) executionFunc {
 
 		d := scope.Memory.GetCopy(int64(mStart.Uint64()), int64(mSize.Uint64()))
 
-		forkBlock := uint64(0)
-		if interpreter.evm.ChainConfig().ForkID88ElderberryBlock != nil {
-			forkBlock = interpreter.VM.evm.ChainConfig().ForkID88ElderberryBlock.Uint64()
-		}
-		blockNo := interpreter.VM.evm.Context().BlockNumber
-
-		// [hack] APPLY BUG ONLY ABOVE FORKID9
-		if forkBlock == 0 || blockNo < forkBlock {
-			// [zkEvm] fill 0 at the end
-			dataLen := len(d)
-			lenMod32 := dataLen & 31
-			if lenMod32 != 0 {
-				d = append(d, make([]byte, 32-lenMod32)...)
-			}
-		} else {
-			// bug start
-			/*
-			  \  /
-			 (o)(o)
-			 /    \
-			 \    /
-			  \  /
-			   \/
-			*/
-			var err error
-
-			d, err = applyHexPadBug(d, int(mSize.Uint64()), blockNo)
-			if err != nil {
-				return nil, err
-			}
-			/*
-			  \  /
-			 (o)(o)
-			 /    \
-			 \    /
-			  \  /
-			   \/
-			*/
-			// bug end
-		}
-
 		log := types.Log{
 			Address: scope.Contract.Address(),
 			Topics:  topics,
@@ -228,86 +179,6 @@ func makeLog_zkevm(size int, logIndexPerTx bool) executionFunc {
 
 		return nil, nil
 	}
-}
-
-func applyHexPadBug(d []byte, msInt int, blockNo uint64) ([]byte, error) {
-	fullMs := msInt
-
-	var dLastWord []byte
-	if len(d) <= 32 {
-		dLastWord = append(d, make([]byte, 32-len(d))...)
-		d = []byte{}
-	} else {
-		dLastWord, msInt = getLastWordBytes(d, fullMs)
-		d = d[:len(d)-len(dLastWord)]
-	}
-
-	dataHex := hex.EncodeToString(dLastWord)
-
-	dataHex = appendZeros(dataHex, 64)
-
-	for len(dataHex) > 0 && dataHex[0] == '0' {
-		dataHex = dataHex[1:]
-	}
-
-	if len(dataHex) < msInt*2 {
-		dataHex = prependZeros(dataHex, msInt*2)
-	}
-	outputStr := takeFirstN(dataHex, msInt*2)
-
-	op, err := hex.DecodeString(outputStr)
-	if err != nil {
-		return nil, err
-	}
-	d = append(d, op...)
-
-	d = d[:fullMs]
-
-	return d, nil
-}
-
-func min(a, b uint64) uint64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func getLastWordBytes(data []byte, originalMsInt int) ([]byte, int) {
-	wordLength := 32
-	dataLength := len(data)
-
-	remainderLength := dataLength % wordLength
-	if remainderLength == 0 {
-		return data[dataLength-wordLength:], 32
-	}
-
-	toRemove := dataLength / wordLength
-
-	msInt := originalMsInt - (toRemove * wordLength)
-
-	return data[dataLength-remainderLength:], msInt
-}
-
-func prependZeros(data string, size int) string {
-	for len(data) < size {
-		data = "0" + data
-	}
-	return data
-}
-
-func takeFirstN(data string, n int) string {
-	if len(data) < n {
-		return data
-	}
-	return data[:n]
-}
-
-func appendZeros(dataHex string, targetLength int) string {
-	for len(dataHex) < targetLength {
-		dataHex += "0"
-	}
-	return dataHex
 }
 
 func opCreate_zkevm(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
@@ -489,4 +360,141 @@ func opDelegateCall_zkevm(pc *uint64, interpreter *EVMInterpreter, scope *ScopeC
 
 	interpreter.returnData = ret
 	return ret, nil
+}
+
+// OpCoded execution overrides that are used for executing the last opcode in case of an error
+func opBlockhash_zkevm_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	num := scope.Stack.Peek()
+
+	ibs := interpreter.evm.IntraBlockState()
+	ibs.GetBlockStateRoot(num)
+
+	return nil, nil
+}
+
+func opCodeSize_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	return nil, nil
+}
+
+func opExtCodeSize_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	slot := scope.Stack.Peek()
+	interpreter.evm.IntraBlockState().GetCodeSize(slot.Bytes20())
+	return nil, nil
+}
+
+func opExtCodeCopy_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	var (
+		stack = scope.Stack
+		a     = stack.Pop()
+	)
+	addr := libcommon.Address(a.Bytes20())
+	interpreter.evm.IntraBlockState().GetCode(addr)
+	return nil, nil
+}
+
+func opExtCodeHash_zkevm_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	slot := scope.Stack.Peek()
+	address := libcommon.Address(slot.Bytes20())
+	ibs := interpreter.evm.IntraBlockState()
+	ibs.GetCodeSize(address)
+	ibs.GetCodeHash(address)
+	return nil, nil
+}
+
+func opSelfBalance_lastOpCode(pc *uint64, interpreter *EVMInterpreter, callContext *ScopeContext) ([]byte, error) {
+	interpreter.evm.IntraBlockState().GetBalance(callContext.Contract.Address())
+	return nil, nil
+}
+
+func opBalance_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	slot := scope.Stack.Peek()
+	address := libcommon.Address(slot.Bytes20())
+	interpreter.evm.IntraBlockState().GetBalance(address)
+	return nil, nil
+}
+
+func opCreate_zkevm_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if interpreter.readOnly {
+		return nil, ErrWriteProtection
+	}
+	var (
+		value = scope.Stack.Pop()
+		gas   = scope.Contract.Gas
+	)
+	if interpreter.evm.ChainRules().IsTangerineWhistle {
+		gas -= gas / 64
+	}
+
+	caller := scope.Contract
+	address := crypto.CreateAddress(caller.Address(), interpreter.evm.IntraBlockState().GetNonce(caller.Address()))
+
+	interpreter.evm.IntraBlockState().GetBalance(caller.Address())
+	nonce := interpreter.evm.IntraBlockState().GetNonce(caller.Address())
+	interpreter.evm.IntraBlockState().SetNonce(caller.Address(), nonce+1)
+	interpreter.evm.IntraBlockState().AddAddressToAccessList(address)
+	interpreter.evm.IntraBlockState().GetCodeHash(address)
+	interpreter.evm.IntraBlockState().GetNonce(address)
+	interpreter.evm.IntraBlockState().CreateAccount(address, true)
+	interpreter.evm.IntraBlockState().SetNonce(address, 1)
+	interpreter.evm.IntraBlockState().SubBalance(caller.Address(), &value)
+	interpreter.evm.IntraBlockState().AddBalance(address, &value)
+	interpreter.evm.IntraBlockState().SetCode(address, []byte{0})
+
+	return nil, nil
+}
+
+func opCreate2_zkevm_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if interpreter.readOnly {
+		return nil, ErrWriteProtection
+	}
+	var (
+		endowment    = scope.Stack.Pop()
+		offset, size = scope.Stack.Pop(), scope.Stack.Pop()
+		salt         = scope.Stack.Pop()
+		input        = scope.Memory.GetCopy(int64(offset.Uint64()), int64(size.Uint64()))
+	)
+
+	caller := scope.Contract
+	codeAndHash := &codeAndHash{code: input}
+	address := crypto.CreateAddress2(caller.Address(), salt.Bytes32(), codeAndHash.Hash().Bytes())
+
+	interpreter.evm.IntraBlockState().GetBalance(caller.Address())
+	nonce := interpreter.evm.IntraBlockState().GetNonce(caller.Address())
+	interpreter.evm.IntraBlockState().SetNonce(caller.Address(), nonce+1)
+	interpreter.evm.IntraBlockState().AddAddressToAccessList(address)
+	interpreter.evm.IntraBlockState().GetCodeHash(address)
+	interpreter.evm.IntraBlockState().GetNonce(address)
+	interpreter.evm.IntraBlockState().CreateAccount(address, true)
+	interpreter.evm.IntraBlockState().SetNonce(address, 1)
+	interpreter.evm.IntraBlockState().SubBalance(caller.Address(), &endowment)
+	interpreter.evm.IntraBlockState().AddBalance(address, &endowment)
+	interpreter.evm.IntraBlockState().SetCode(address, []byte{0})
+
+	return nil, nil
+}
+
+func opReturn_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	return nil, nil
+}
+
+func opUndefined_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	return nil, nil
+}
+
+func opSload_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	loc := scope.Stack.Peek()
+	interpreter.hasherBuf = loc.Bytes32()
+	interpreter.evm.IntraBlockState().GetState(scope.Contract.Address(), &interpreter.hasherBuf, loc)
+	return nil, nil
+}
+
+func opSstore_lastOpCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if interpreter.readOnly {
+		return nil, ErrWriteProtection
+	}
+	loc := scope.Stack.Pop()
+	val := scope.Stack.Pop()
+	interpreter.hasherBuf = loc.Bytes32()
+	interpreter.evm.IntraBlockState().SetState(scope.Contract.Address(), &interpreter.hasherBuf, val)
+	return nil, nil
 }

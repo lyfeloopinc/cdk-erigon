@@ -18,6 +18,7 @@ import (
 
 	"os"
 
+	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/common/math"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/state"
@@ -113,6 +114,7 @@ func SpawnExecuteBlocksStageZk(s *StageState, u Unwinder, tx kv.RwTx, toBlock ui
 Loop:
 	for blockNum := s.BlockNumber + 1; blockNum <= to; blockNum++ {
 		if cfg.zk.SyncLimit > 0 && blockNum > cfg.zk.SyncLimit {
+			log.Info(fmt.Sprintf("[%s] Sync limit reached", s.LogPrefix()), "block", blockNum)
 			break
 		}
 
@@ -121,7 +123,7 @@ Loop:
 		}
 
 		//fetch values pre execute
-		preExecuteHeaderHash, block, senders, err := getPreexecuteValues(cfg, ctx, tx, blockNum, prevBlockHash)
+		datastreamBlockHash, block, senders, err := getPreexecuteValues(cfg, ctx, tx, blockNum, prevBlockHash)
 		if err != nil {
 			stoppedErr = err
 			break
@@ -135,15 +137,15 @@ Loop:
 		execRs, err := executeBlockZk(block, &prevBlockRoot, tx, batch, cfg, *cfg.vmConfig, writeChangeSets, writeReceipts, writeCallTraces, initialCycle, stateStream, hermezDb)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				log.Warn(fmt.Sprintf("[%s] Execution failed", s.LogPrefix()), "block", blockNum, "hash", block.Hash().String(), "err", err)
+				log.Warn(fmt.Sprintf("[%s] Execution failed", s.LogPrefix()), "block", blockNum, "hash", datastreamBlockHash.Hex(), "err", err)
 				if cfg.hd != nil {
-					cfg.hd.ReportBadHeaderPoS(preExecuteHeaderHash, block.ParentHash())
+					cfg.hd.ReportBadHeaderPoS(datastreamBlockHash, block.ParentHash())
 				}
 				if cfg.badBlockHalt {
 					return err
 				}
 			}
-			u.UnwindTo(blockNum-1, block.Hash())
+			u.UnwindTo(blockNum-1, datastreamBlockHash)
 			break Loop
 		}
 
@@ -196,7 +198,7 @@ Loop:
 		}
 
 		//commit values post execute
-		if err := postExecuteCommitValues(cfg, tx, eridb, batch, preExecuteHeaderHash, block, senders); err != nil {
+		if err := postExecuteCommitValues(s.LogPrefix(), cfg, tx, eridb, batch, datastreamBlockHash, block, senders); err != nil {
 			return err
 		}
 	}
@@ -215,7 +217,7 @@ Loop:
 		return fmt.Errorf("batch commit: %w", err)
 	}
 
-	_, err = rawdb.IncrementStateVersion(tx)
+	_, err = rawdb.IncrementStateVersionByBlockNumberIfNeeded(tx, stageProgress) // stageProgress is latest processsed block number
 	if err != nil {
 		return fmt.Errorf("writing plain state version: %w", err)
 	}
@@ -277,6 +279,11 @@ func getExecRange(cfg ExecuteBlockCfg, tx kv.RwTx, stageProgress, toBlock uint64
 		return 0, 0, err
 	}
 
+	// skip if no progress
+	if prevStageProgress == 0 && toBlock == 0 {
+		return 0, 0, nil
+	}
+
 	to := prevStageProgress
 	if toBlock > 0 {
 		to = cmp.Min(prevStageProgress, toBlock)
@@ -313,24 +320,49 @@ func getPreexecuteValues(cfg ExecuteBlockCfg, ctx context.Context, tx kv.RwTx, b
 }
 
 func postExecuteCommitValues(
+	logPrefix string,
 	cfg ExecuteBlockCfg,
 	tx kv.RwTx,
 	eridb *erigon_db.ErigonDb,
 	batch ethdb.DbWithPendingMutations,
-	preExecuteHeaderHash common.Hash,
+	datastreamBlockHash common.Hash,
 	block *types.Block,
 	senders []common.Address,
 ) error {
 	header := block.Header()
-	headerHash := header.Hash()
+	blockHash := header.Hash()
 	blockNum := block.NumberU64()
 
-	if err := rawdbZk.DeleteSenders(tx, preExecuteHeaderHash, blockNum); err != nil {
-		return fmt.Errorf("failed to delete senders: %v", err)
-	}
+	// if datastream hash was wrong, remove old data
+	if blockHash != datastreamBlockHash {
+		if cfg.chainConfig.IsForkId9Elderberry2(blockNum) {
+			log.Warn(fmt.Sprintf("[%s] Blockhash mismatch", logPrefix), "blockNumber", blockNum, "datastreamBlockHash", datastreamBlockHash, "calculatedBlockHash", blockHash)
+		}
+		if err := rawdbZk.DeleteSenders(tx, datastreamBlockHash, blockNum); err != nil {
+			return fmt.Errorf("failed to delete senders: %v", err)
+		}
+		if err := rawdbZk.DeleteHeader(tx, datastreamBlockHash, blockNum); err != nil {
+			return fmt.Errorf("failed to delete header: %v", err)
+		}
 
-	if err := rawdbZk.DeleteHeader(tx, preExecuteHeaderHash, blockNum); err != nil {
-		return fmt.Errorf("failed to delete header: %v", err)
+		bodyForStorage, err := rawdb.ReadBodyForStorageByKey(tx, dbutils.BlockBodyKey(blockNum, datastreamBlockHash))
+		if err != nil {
+			return err
+		}
+
+		if err := rawdb.DeleteBodyAndTransactions(tx, blockNum, datastreamBlockHash); err != nil {
+			return err
+		}
+		if err := rawdb.WriteBodyAndTransactions(tx, blockHash, blockNum, block.Transactions(), bodyForStorage); err != nil {
+			return err
+		}
+
+		// [zkevm] senders were saved in stage_senders for headerHashes based on incomplete headers
+		// in stage execute we complete the headers and senders should be moved to the correct headerHash
+		// also we should delete other data based on the old hash, since it is unaccessable now
+		if err := rawdb.WriteSenders(tx, blockHash, blockNum, senders); err != nil {
+			return fmt.Errorf("failed to write senders: %v", err)
+		}
 	}
 
 	// TODO: how can we store this data right first time?  Or mop up old data as we're currently duping storage
@@ -356,23 +388,15 @@ func postExecuteCommitValues(
 	if err := rawdb.WriteHeader_zkEvm(tx, header); err != nil {
 		return fmt.Errorf("failed to write header: %v", err)
 	}
-	if err := rawdb.WriteHeadHeaderHash(tx, headerHash); err != nil {
+	if err := rawdb.WriteHeadHeaderHash(tx, blockHash); err != nil {
 		return err
 	}
-	if err := rawdb.WriteCanonicalHash(tx, headerHash, blockNum); err != nil {
+	if err := rawdb.WriteCanonicalHash(tx, blockHash, blockNum); err != nil {
 		return fmt.Errorf("failed to write header: %v", err)
 	}
-
-	if err := eridb.WriteBody(block.Number(), headerHash, block.Transactions()); err != nil {
-		return fmt.Errorf("failed to write body: %v", err)
-	}
-
-	// [zkevm] senders were saved in stage_senders for headerHashes based on incomplete headers
-	// in stage execute we complete the headers and senders should be moved to the correct headerHash
-	// also we should delete other ata based on the old hash, since it is unaccessable now
-	if err := rawdb.WriteSenders(tx, headerHash, blockNum, senders); err != nil {
-		return fmt.Errorf("failed to write senders: %v", err)
-	}
+	// if err := eridb.WriteBody(block.Number(), blockHash, block.Transactions()); err != nil {
+	// 	return fmt.Errorf("failed to write body: %v", err)
+	// }
 
 	// write the new block lookup entries
 	if err := rawdb.WriteTxLookupEntries_zkEvm(tx, block); err != nil {
@@ -471,6 +495,11 @@ func UnwindExecutionStageZk(u *UnwindState, s *StageState, tx kv.RwTx, ctx conte
 		return err
 	}
 
+	// update the headers stage as we mark progress there as part of execution
+	if err = stages.SaveStageProgress(tx, stages.Headers, u.UnwindPoint); err != nil {
+		return err
+	}
+
 	if err = u.Done(tx); err != nil {
 		return err
 	}
@@ -560,17 +589,43 @@ func UnwindExecutionStageDbWrites(ctx context.Context, u *UnwindState, s *StageS
 	}
 	rawdb.WriteHeadHeaderHash(tx, hash)
 
+	/*
+		unwind EffectiveGasPricePercentage here although it is written in stage batches (RPC) or stage execute (Sequencer)
+		EffectiveGasPricePercentage could not be unwound after TruncateBlocks
+	*/
+	eriDb := erigon_db.NewErigonDb(tx)
+	hermezDb := hermez_db.NewHermezDb(tx)
+
+	transactions, err := eriDb.GetBodyTransactions(u.UnwindPoint+1, s.BlockNumber)
+	if err != nil {
+		return fmt.Errorf("get body transactions error: %v", err)
+	}
+	transactionHashes := make([]common.Hash, 0, len(*transactions))
+	for _, tx := range *transactions {
+		transactionHashes = append(transactionHashes, tx.Hash())
+	}
+	if err := hermezDb.DeleteEffectiveGasPricePercentages(&transactionHashes); err != nil {
+		return fmt.Errorf("delete effective gas price percentages error: %v", err)
+	}
+
 	if err = rawdbZk.TruncateSenders(tx, u.UnwindPoint+1, s.BlockNumber); err != nil {
 		return fmt.Errorf("delete senders: %w", err)
 	}
 	if err = rawdb.TruncateTxLookupEntries_zkEvm(tx, u.UnwindPoint+1, s.BlockNumber); err != nil {
 		return fmt.Errorf("delete tx lookup entires: %w", err)
 	}
+	if err = rawdb.TruncateBlocks(ctx, tx, u.UnwindPoint+1); err != nil {
+		return fmt.Errorf("delete blocks: %w", err)
+	}
 	if err = rawdb.TruncateCanonicalHash(tx, u.UnwindPoint+1, true); err != nil {
 		return fmt.Errorf("delete cannonical hash with headers: %w", err)
 	}
-	if err = rawdb.TruncateBlocks(ctx, tx, u.UnwindPoint+1); err != nil {
-		return fmt.Errorf("delete blocks: %w", err)
+	if err = rawdb.TruncateStateVersion(tx, u.UnwindPoint+1); err != nil {
+		return err
+	}
+
+	if err = hermezDb.DeleteBlockInfoRoots(u.UnwindPoint+1, s.BlockNumber); err != nil {
+		return fmt.Errorf("delete block info roots: %w", err)
 	}
 
 	return nil

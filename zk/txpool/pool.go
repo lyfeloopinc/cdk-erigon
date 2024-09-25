@@ -117,34 +117,36 @@ const (
 type DiscardReason uint8
 
 const (
-	NotSet                 DiscardReason = 0 // analog of "nil-value", means it will be set in future
-	Success                DiscardReason = 1
-	AlreadyKnown           DiscardReason = 2
-	Mined                  DiscardReason = 3
-	ReplacedByHigherTip    DiscardReason = 4
-	UnderPriced            DiscardReason = 5
-	ReplaceUnderpriced     DiscardReason = 6 // if a transaction is attempted to be replaced with a different one without the required price bump.
-	FeeTooLow              DiscardReason = 7
-	OversizedData          DiscardReason = 8
-	InvalidSender          DiscardReason = 9
-	NegativeValue          DiscardReason = 10 // ensure no one is able to specify a transaction with a negative value.
-	Spammer                DiscardReason = 11
-	PendingPoolOverflow    DiscardReason = 12
-	BaseFeePoolOverflow    DiscardReason = 13
-	QueuedPoolOverflow     DiscardReason = 14
-	GasUintOverflow        DiscardReason = 15
-	IntrinsicGas           DiscardReason = 16
-	RLPTooLong             DiscardReason = 17
-	NonceTooLow            DiscardReason = 18
-	InsufficientFunds      DiscardReason = 19
-	NotReplaced            DiscardReason = 20 // There was an existing transaction with the same sender and nonce, not enough price bump to replace
-	DuplicateHash          DiscardReason = 21 // There was an existing transaction with the same hash
-	InitCodeTooLarge       DiscardReason = 22 // EIP-3860 - transaction init code is too large
-	UnsupportedTx          DiscardReason = 23 // unsupported transaction type
-	OverflowZkCounters     DiscardReason = 24 // unsupported transaction type
-	SenderDisallowedSendTx DiscardReason = 25 // sender is not allowed to send transactions by ACL policy
-	SenderDisallowedDeploy DiscardReason = 26 // sender is not allowed to deploy contracts by ACL policy
-	DiscardByLimbo         DiscardReason = 27
+	NotSet                          DiscardReason = 0 // analog of "nil-value", means it will be set in future
+	Success                         DiscardReason = 1
+	AlreadyKnown                    DiscardReason = 2
+	Mined                           DiscardReason = 3
+	ReplacedByHigherTip             DiscardReason = 4
+	UnderPriced                     DiscardReason = 5
+	ReplaceUnderpriced              DiscardReason = 6 // if a transaction is attempted to be replaced with a different one without the required price bump.
+	FeeTooLow                       DiscardReason = 7
+	OversizedData                   DiscardReason = 8
+	InvalidSender                   DiscardReason = 9
+	NegativeValue                   DiscardReason = 10 // ensure no one is able to specify a transaction with a negative value.
+	Spammer                         DiscardReason = 11
+	PendingPoolOverflow             DiscardReason = 12
+	BaseFeePoolOverflow             DiscardReason = 13
+	QueuedPoolOverflow              DiscardReason = 14
+	GasUintOverflow                 DiscardReason = 15
+	IntrinsicGas                    DiscardReason = 16
+	RLPTooLong                      DiscardReason = 17
+	NonceTooLow                     DiscardReason = 18
+	InsufficientFunds               DiscardReason = 19
+	NotReplaced                     DiscardReason = 20 // There was an existing transaction with the same sender and nonce, not enough price bump to replace
+	DuplicateHash                   DiscardReason = 21 // There was an existing transaction with the same hash
+	InitCodeTooLarge                DiscardReason = 22 // EIP-3860 - transaction init code is too large
+	UnsupportedTx                   DiscardReason = 23 // unsupported transaction type
+	OverflowZkCounters              DiscardReason = 24 // unsupported transaction type
+	SenderDisallowedSendTx          DiscardReason = 25 // sender is not allowed to send transactions by ACL policy
+	SenderDisallowedDeploy          DiscardReason = 26 // sender is not allowed to deploy contracts by ACL policy
+	DiscardByLimbo                  DiscardReason = 27
+	SmartContractDeploymentDisabled DiscardReason = 28 // to == null not allowed, config set to block smart contract deployment
+	GasLimitTooHigh                 DiscardReason = 29 // gas limit is too high
 )
 
 func (r DiscardReason) String() string {
@@ -205,6 +207,10 @@ func (r DiscardReason) String() string {
 		return "sender disallowed to deploy contract by ACL policy"
 	case DiscardByLimbo:
 		return "limbo error"
+	case SmartContractDeploymentDisabled:
+		return "smart contract deployment disabled"
+	case GasLimitTooHigh:
+		return fmt.Sprintf("gas limit too high. Max: %d", transactionGasLimit)
 	default:
 		panic(fmt.Sprintf("discard reason: %d", r))
 	}
@@ -212,18 +218,17 @@ func (r DiscardReason) String() string {
 
 // metaTx holds transaction and some metadata
 type metaTx struct {
-	Tx                                *types.TxSlot
-	minFeeCap                         uint256.Int
-	nonceDistance                     uint64 // how far their nonces are from the state's nonce for the sender
-	cumulativeBalanceDistance         uint64 // how far their cumulativeRequiredBalance are from the state's balance for the sender
-	minTip                            uint64
-	bestIndex                         int
-	worstIndex                        int
-	timestamp                         uint64 // when it was added to pool
-	subPool                           SubPoolMarker
-	currentSubPool                    SubPoolType
-	alreadyYielded                    bool
-	overflowZkCountersDuringExecution bool
+	Tx                        *types.TxSlot
+	minFeeCap                 uint256.Int
+	nonceDistance             uint64 // how far their nonces are from the state's nonce for the sender
+	cumulativeBalanceDistance uint64 // how far their cumulativeRequiredBalance are from the state's balance for the sender
+	minTip                    uint64
+	bestIndex                 int
+	worstIndex                int
+	timestamp                 uint64 // when it was added to pool
+	subPool                   SubPoolMarker
+	currentSubPool            SubPoolType
+	alreadyYielded            bool
 }
 
 func newMetaTx(slot *types.TxSlot, isLocal bool, timestmap uint64) *metaTx {
@@ -304,6 +309,7 @@ type TxPool struct {
 	newPendingTxs           chan types.Announcements         // notifications about new txs in Pending sub-pool
 	all                     *BySenderAndNonce                // senderID => (sorted map of tx nonce => *metaTx)
 	deletedTxs              []*metaTx                        // list of discarded txs since last db commit
+	overflowZkCounters      []*metaTx
 	promoted                types.Announcements
 	cfg                     txpoolcfg.Config
 	chainID                 uint256.Int
@@ -315,7 +321,7 @@ type TxPool struct {
 	isPostLondon            atomic.Bool
 	shanghaiTime            *big.Int
 	isPostShanghai          atomic.Bool
-	allowFreeTransactions   bool
+	ethCfg                  *ethconfig.Config
 	aclDB                   kv.RwDB
 
 	// we cannot be in a flushing state whilst getting transactions from the pool, so we have this mutex which is
@@ -325,6 +331,13 @@ type TxPool struct {
 
 	// limbo specific fields where bad batch transactions identified by the executor go
 	limbo *Limbo
+}
+
+func CreateTxPoolBuckets(tx kv.RwTx) error {
+	if err := tx.CreateBucket(TablePoolLimbo); err != nil {
+		return err
+	}
+	return nil
 }
 
 func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, ethCfg *ethconfig.Config, cache kvcache.Cache, chainID uint256.Int, shanghaiTime *big.Int, londonBlock *big.Int, aclDB kv.RwDB) (*TxPool, error) {
@@ -367,7 +380,7 @@ func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, 
 		unprocessedRemoteByHash: map[string]int{},
 		londonBlock:             londonBlock,
 		shanghaiTime:            shanghaiTime,
-		allowFreeTransactions:   ethCfg.AllowFreeTransactions,
+		ethCfg:                  ethCfg,
 		flushMtx:                &sync.Mutex{},
 		aclDB:                   aclDB,
 		limbo:                   newLimbo(),
@@ -411,14 +424,7 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 		return err
 	}
 
-	var baseFee uint64
-	if !p.allowFreeTransactions {
-		baseFee = stateChanges.PendingBlockBaseFee
-	} else {
-		baseFee = uint64(0)
-	}
-
-	pendingBaseFee, baseFeeChanged := p.setBaseFee(baseFee)
+	pendingBaseFee, baseFeeChanged := p.setBaseFee(stateChanges.PendingBlockBaseFee, p.ethCfg.AllowFreeTransactions)
 	// Update pendingBase for all pool queues and slices
 	if baseFeeChanged {
 		p.pending.best.pendingBaseFee = pendingBaseFee
@@ -468,7 +474,7 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 
 	//log.Debug("[txpool] new block", "unwinded", len(unwindTxs.txs), "mined", len(minedTxs.txs), "baseFee", baseFee, "blockHeight", blockHeight)
 
-	announcements, err := addTxsOnNewBlock(
+	announcements, err := p.addTxsOnNewBlock(
 		blockNum,
 		cacheView,
 		stateChanges,
@@ -492,7 +498,6 @@ func (p *TxPool) OnNewBlock(ctx context.Context, stateChanges *remote.StateChang
 	p.pending.EnforceWorstInvariants()
 	p.baseFee.EnforceInvariants()
 	p.queued.EnforceInvariants()
-	promoteZk(p.pending, p.baseFee, p.queued, pendingBaseFee, p.discardLocked, &announcements)
 	p.pending.EnforceBestInvariants()
 	p.promoted.Reset()
 	p.promoted.AppendOther(announcements)
@@ -558,7 +563,7 @@ func (p *TxPool) processRemoteTxs(ctx context.Context) error {
 		return err
 	}
 
-	announcements, _, err := addTxs(p.lastSeenBlock.Load(), cacheView, p.senders, newTxs,
+	announcements, _, err := p.addTxs(p.lastSeenBlock.Load(), cacheView, p.senders, newTxs,
 		p.pendingBaseFee.Load(), p.blockGasLimit.Load(), p.pending, p.baseFee, p.queued, p.all, p.byHash, p.addLocked, p.discardLocked, true)
 	if err != nil {
 		return err
@@ -707,6 +712,12 @@ func (p *TxPool) validateTx(txn *types.TxSlot, isLocal bool, stateCache kvcache.
 		}
 	}
 
+	if p.ethCfg.Zk.TxPoolRejectSmartContractDeployments {
+		if txn.To == (common.Address{}) {
+			return SmartContractDeploymentDisabled
+		}
+	}
+
 	isLondon := p.isLondon()
 	if !isLondon && txn.Type == 0x2 {
 		return UnsupportedTx
@@ -735,6 +746,13 @@ func (p *TxPool) validateTx(txn *types.TxSlot, isLocal bool, stateCache kvcache.
 		}
 		return IntrinsicGas
 	}
+	if txn.Gas > transactionGasLimit {
+		if txn.Traced {
+			log.Info(fmt.Sprintf("TX TRACING: validateTx gas limit too high idHash=%x gas=%d, limit=%d", txn.IDHash, txn.Gas, transactionGasLimit))
+		}
+		return GasLimitTooHigh
+	}
+
 	if !isLocal && uint64(p.all.count(txn.SenderID)) > p.cfg.AccountSlots {
 		if txn.Traced {
 			log.Info(fmt.Sprintf("TX TRACING: validateTx marked as spamming idHash=%x slots=%d, limit=%d", txn.IDHash, p.all.count(txn.SenderID), p.cfg.AccountSlots))
@@ -764,7 +782,7 @@ func (p *TxPool) validateTx(txn *types.TxSlot, isLocal bool, stateCache kvcache.
 	switch resolvePolicy(txn) {
 	case SendTx:
 		var allow bool
-		allow, err := p.checkPolicy(context.TODO(), from, SendTx)
+		allow, err := p.isActionAllowed(context.TODO(), from, SendTx)
 		if err != nil {
 			panic(err)
 		}
@@ -774,7 +792,7 @@ func (p *TxPool) validateTx(txn *types.TxSlot, isLocal bool, stateCache kvcache.
 	case Deploy:
 		var allow bool
 		// check that sender may deploy contracts
-		allow, err := p.checkPolicy(context.TODO(), from, Deploy)
+		allow, err := p.isActionAllowed(context.TODO(), from, Deploy)
 		if err != nil {
 			panic(err)
 		}
@@ -944,7 +962,7 @@ func (p *TxPool) AddLocalTxs(ctx context.Context, newTransactions types.TxSlots,
 		return nil, err
 	}
 
-	announcements, addReasons, err := addTxs(p.lastSeenBlock.Load(), cacheView, p.senders, newTxs,
+	announcements, addReasons, err := p.addTxs(p.lastSeenBlock.Load(), cacheView, p.senders, newTxs,
 		p.pendingBaseFee.Load(), p.blockGasLimit.Load(), p.pending, p.baseFee, p.queued, p.all, p.byHash, p.addLocked, p.discardLocked, true)
 	if err == nil {
 		for i, reason := range addReasons {
@@ -989,7 +1007,7 @@ func (p *TxPool) cache() kvcache.Cache {
 	return p._stateCache
 }
 
-func addTxs(blockNum uint64, cacheView kvcache.CacheView, senders *sendersBatch,
+func (p *TxPool) addTxs(blockNum uint64, cacheView kvcache.CacheView, senders *sendersBatch,
 	newTxs types.TxSlots, pendingBaseFee, blockGasLimit uint64,
 	pending *PendingPool, baseFee, queued *SubPool,
 	byNonce *BySenderAndNonce, byHash map[string]*metaTx, add func(*metaTx, *types.Announcements) DiscardReason, discard func(*metaTx, DiscardReason), collect bool) (types.Announcements, []DiscardReason, error) {
@@ -1034,24 +1052,39 @@ func addTxs(blockNum uint64, cacheView kvcache.CacheView, senders *sendersBatch,
 		sendersWithChangedState[mt.Tx.SenderID] = struct{}{}
 	}
 
+	p.discardOverflowZkCountersFromPending(pending, discard, sendersWithChangedState)
+
 	for senderID := range sendersWithChangedState {
 		nonce, balance, err := senders.info(cacheView, senderID)
 		if err != nil {
 			return announcements, discardReasons, err
 		}
-		onSenderStateChange(senderID, nonce, balance, byNonce,
+		p.onSenderStateChange(senderID, nonce, balance, byNonce,
 			protocolBaseFee, blockGasLimit, pending, baseFee, queued, discard)
 	}
 
-	promoteZk(pending, baseFee, queued, pendingBaseFee, discard, &announcements)
-	pending.EnforceBestInvariants()
+	promote(pending, baseFee, queued, pendingBaseFee, discard, &announcements)
 
 	return announcements, discardReasons, nil
 }
-func addTxsOnNewBlock(blockNum uint64, cacheView kvcache.CacheView, stateChanges *remote.StateChangeBatch,
-	senders *sendersBatch, newTxs types.TxSlots, pendingBaseFee uint64, blockGasLimit uint64,
-	pending *PendingPool, baseFee, queued *SubPool,
-	byNonce *BySenderAndNonce, byHash map[string]*metaTx, sendersWithChangedStateBeforeLimboTrim *LimboSendersWithChangedState, add func(*metaTx, *types.Announcements) DiscardReason, discard func(*metaTx, DiscardReason)) (types.Announcements, error) {
+
+func (p *TxPool) addTxsOnNewBlock(
+	blockNum uint64,
+	cacheView kvcache.CacheView,
+	stateChanges *remote.StateChangeBatch,
+	senders *sendersBatch,
+	newTxs types.TxSlots,
+	pendingBaseFee uint64,
+	blockGasLimit uint64,
+	pending *PendingPool,
+	baseFee,
+	queued *SubPool,
+	byNonce *BySenderAndNonce,
+	byHash map[string]*metaTx,
+	sendersWithChangedStateBeforeLimboTrim *LimboSendersWithChangedState,
+	add func(*metaTx, *types.Announcements) DiscardReason,
+	discard func(*metaTx, DiscardReason),
+) (types.Announcements, error) {
 	protocolBaseFee := calcProtocolBaseFee(pendingBaseFee)
 	if assert.Enable {
 		for _, txn := range newTxs.Txs {
@@ -1109,20 +1142,30 @@ func addTxsOnNewBlock(blockNum uint64, cacheView kvcache.CacheView, stateChanges
 		}
 	}
 
+	p.discardOverflowZkCountersFromPending(pending, discard, sendersWithChangedState)
+
 	for senderID := range sendersWithChangedState {
 		nonce, balance, err := senders.info(cacheView, senderID)
 		if err != nil {
 			return announcements, err
 		}
-		onSenderStateChange(senderID, nonce, balance, byNonce,
+		p.onSenderStateChange(senderID, nonce, balance, byNonce,
 			protocolBaseFee, blockGasLimit, pending, baseFee, queued, discard)
 	}
+
+	promote(pending, baseFee, queued, pendingBaseFee, discard, &announcements)
 
 	return announcements, nil
 }
 
-func (p *TxPool) setBaseFee(baseFee uint64) (uint64, bool) {
+func (p *TxPool) setBaseFee(baseFee uint64, allowFreeTransactions bool) (uint64, bool) {
 	changed := false
+	if allowFreeTransactions {
+		changed = uint64(0) != p.pendingBaseFee.Load()
+		p.pendingBaseFee.Store(0)
+		return 0, changed
+	}
+
 	if baseFee > 0 {
 		changed = baseFee != p.pendingBaseFee.Load()
 		p.pendingBaseFee.Store(baseFee)
@@ -1164,6 +1207,9 @@ func (p *TxPool) addLocked(mt *metaTx, announcements *types.Announcements) Disca
 		}
 
 		p.discardLocked(found, ReplacedByHigherTip)
+	} else if p.pending.IsFull() {
+		// new transaction will be denied if pending pool is full unless it will replace an old transaction
+		return PendingPoolOverflow
 	}
 
 	p.byHash[string(mt.Tx.IDHash[:])] = mt
@@ -1591,6 +1637,11 @@ func (p *TxPool) fromDB(ctx context.Context, tx kv.Tx, coreTx kv.Tx) error {
 	if err != nil {
 		return err
 	}
+
+	if err = p.fromDBLimbo(ctx, tx, cacheView); err != nil {
+		return err
+	}
+
 	it, err := tx.Range(kv.RecentLocalTransaction, nil, nil)
 	if err != nil {
 		return err
@@ -1634,7 +1685,7 @@ func (p *TxPool) fromDB(ctx context.Context, tx kv.Tx, coreTx kv.Tx) error {
 		isLocalTx := p.isLocalLRU.Contains(string(k))
 
 		if reason := p.validateTx(txn, isLocalTx, cacheView, addr); reason != NotSet && reason != Success {
-			return nil
+			continue
 		}
 		txs.Resize(uint(i + 1))
 		txs.Txs[i] = txn
@@ -1657,15 +1708,11 @@ func (p *TxPool) fromDB(ctx context.Context, tx kv.Tx, coreTx kv.Tx) error {
 	if err != nil {
 		return err
 	}
-	if _, _, err := addTxs(p.lastSeenBlock.Load(), cacheView, p.senders, txs,
+	if _, _, err := p.addTxs(p.lastSeenBlock.Load(), cacheView, p.senders, txs,
 		pendingBaseFee, math.MaxUint64 /* blockGasLimit */, p.pending, p.baseFee, p.queued, p.all, p.byHash, p.addLocked, p.discardLocked, false); err != nil {
 		return err
 	}
 	p.pendingBaseFee.Store(pendingBaseFee)
-
-	if err = p.fromDBLimbo(ctx, tx, cacheView); err != nil {
-		return err
-	}
 
 	return nil
 }
@@ -2084,10 +2131,11 @@ func (b *BySenderAndNonce) replaceOrInsert(mt *metaTx) *metaTx {
 // It's more expensive to maintain "slice sort" invariant, but it allow do cheap copy of
 // pending.best slice for mining (because we consider txs and metaTx are immutable)
 type PendingPool struct {
-	best  *bestSlice
-	worst *WorstQueue
-	limit int
-	t     SubPoolType
+	sorted bool // means `PendingPool.best` is sorted or not
+	best   *bestSlice
+	worst  *WorstQueue
+	limit  int
+	t      SubPoolType
 }
 
 func NewPendingSubPool(t SubPoolType, limit int) *PendingPool {
@@ -2124,7 +2172,10 @@ func (p *PendingPool) EnforceWorstInvariants() {
 	heap.Init(p.worst)
 }
 func (p *PendingPool) EnforceBestInvariants() {
-	sort.Sort(p.best)
+	if !p.sorted {
+		sort.Sort(p.best)
+		p.sorted = true
+	}
 }
 
 func (p *PendingPool) Best() *metaTx { //nolint
@@ -2149,14 +2200,17 @@ func (p *PendingPool) PopWorst() *metaTx { //nolint
 func (p *PendingPool) Updated(mt *metaTx) {
 	heap.Fix(p.worst, mt.worstIndex)
 }
-func (p *PendingPool) Len() int { return len(p.best.ms) }
-
+func (p *PendingPool) Len() int     { return len(p.best.ms) }
+func (p *PendingPool) IsFull() bool { return p.Len() >= p.limit }
 func (p *PendingPool) Remove(i *metaTx) {
 	if i.worstIndex >= 0 {
 		heap.Remove(p.worst, i.worstIndex)
 	}
 	if i.bestIndex >= 0 {
 		p.best.UnsafeRemove(i)
+	}
+	if i.bestIndex != p.best.Len()-1 {
+		p.sorted = false
 	}
 	i.currentSubPool = 0
 }
@@ -2168,6 +2222,7 @@ func (p *PendingPool) Add(i *metaTx) {
 	i.currentSubPool = p.t
 	heap.Push(p.worst, i)
 	p.best.UnsafeAdd(i)
+	p.sorted = false
 }
 func (p *PendingPool) DebugPrint(prefix string) {
 	for i, it := range p.best.ms {

@@ -21,9 +21,48 @@ import (
 	"math/big"
 
 	"github.com/gateway-fm/cdk-erigon-lib/common"
+	libcommon "github.com/gateway-fm/cdk-erigon-lib/common"
 
 	"github.com/ledgerwatch/erigon/crypto"
 )
+
+func (_this *Receipt) Clone() *Receipt {
+	postState := make([]byte, len(_this.PostState))
+	copy(postState, _this.PostState)
+
+	bloom := Bloom{}
+	copy(bloom[:], _this.Bloom[:])
+
+	logs := make(Logs, len(_this.Logs))
+	for i, l := range _this.Logs {
+		logs[i] = l.Clone()
+	}
+
+	txHash := libcommon.Hash{}
+	copy(txHash[:], _this.TxHash[:])
+
+	contractAddress := libcommon.Address{}
+	copy(contractAddress[:], _this.ContractAddress[:])
+
+	blockHash := libcommon.Hash{}
+	copy(blockHash[:], _this.BlockHash[:])
+
+	BlockNumber := big.NewInt(0).Set(_this.BlockNumber)
+
+	return &Receipt{
+		Type:              _this.Type,
+		PostState:         postState,
+		Status:            _this.Status,
+		CumulativeGasUsed: _this.CumulativeGasUsed,
+		Bloom:             bloom,
+		Logs:              logs,
+		TxHash:            txHash,
+		ContractAddress:   contractAddress,
+		BlockHash:         blockHash,
+		BlockNumber:       BlockNumber,
+		TransactionIndex:  _this.TransactionIndex,
+	}
+}
 
 // DeriveFields fills the receipts with their computed fields based on consensus
 // data and contextual infos like containing block and transactions.
@@ -55,9 +94,8 @@ func (r Receipts) DeriveFields_zkEvm(forkId8BlockNum uint64, hash common.Hash, n
 		}
 		// The used gas can be calculated based on previous r
 		// [hack] there was a cumulativeGasUsed bug priod to forkid8, so we need to check for it
-		// if the block is before forkId8 or forkid8 is not even on yet
-		// comuluative is equal to gas used
-		if i == 0 || number < forkId8BlockNum || forkId8BlockNum == 0 {
+		// if the block is before forkId8 comuluative is equal to gas used
+		if i == 0 || number < forkId8BlockNum {
 			r[i].GasUsed = r[i].CumulativeGasUsed
 		} else {
 			r[i].GasUsed = r[i].CumulativeGasUsed - r[i-1].CumulativeGasUsed

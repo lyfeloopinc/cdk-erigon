@@ -240,7 +240,7 @@ func (m *MemDb) GetCode(codeHash []byte) ([]byte, error) {
 
 	codeHash = utils.ResizeHashTo32BytesByPrefixingWithZeroes(codeHash)
 
-	s, ok := m.DbCode[fmt.Sprintf("0x%x", codeHash)]
+	s, ok := m.DbCode["0x"+hex.EncodeToString(codeHash)]
 
 	if !ok {
 		return nil, fmt.Errorf("key not found")
@@ -253,11 +253,7 @@ func (m *MemDb) AddCode(code []byte) error {
 	m.lock.Lock()         // Lock for writing
 	defer m.lock.Unlock() // Make sure to unlock when done
 
-	codeHash, err := utils.HashContractBytecode(hex.EncodeToString(code))
-	if err != nil {
-		return err
-	}
-
+	codeHash := utils.HashContractBytecode(hex.EncodeToString(code))
 	m.DbCode[codeHash] = code
 	return nil
 }

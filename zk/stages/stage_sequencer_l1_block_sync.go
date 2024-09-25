@@ -7,6 +7,8 @@ import (
 
 	"errors"
 
+	"encoding/binary"
+
 	"github.com/gateway-fm/cdk-erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
@@ -15,9 +17,7 @@ import (
 	"github.com/ledgerwatch/erigon/zk/hermez_db"
 	"github.com/ledgerwatch/erigon/zk/l1_data"
 	"github.com/ledgerwatch/erigon/zk/syncer"
-	zktx "github.com/ledgerwatch/erigon/zk/tx"
 	"github.com/ledgerwatch/log/v3"
-	"encoding/binary"
 )
 
 type SequencerL1BlockSyncCfg struct {
@@ -43,9 +43,8 @@ func SpawnSequencerL1BlockSyncStage(
 	ctx context.Context,
 	tx kv.RwTx,
 	cfg SequencerL1BlockSyncCfg,
-	firstCycle bool,
 	quiet bool,
-) error {
+) (funcErr error) {
 	logPrefix := s.LogPrefix()
 	log.Info(fmt.Sprintf("[%s] Starting L1 block sync stage", logPrefix))
 	defer log.Info(fmt.Sprintf("[%s] Finished L1 block sync stage", logPrefix))
@@ -115,7 +114,14 @@ func SpawnSequencerL1BlockSyncStage(
 	}
 
 	if !cfg.syncer.IsSyncStarted() {
-		cfg.syncer.Run(l1BlockHeight)
+		cfg.syncer.RunQueryBlocks(l1BlockHeight)
+		defer func() {
+			if funcErr != nil {
+				cfg.syncer.StopQueryBlocks()
+				cfg.syncer.ConsumeQueryBlocks()
+				cfg.syncer.WaitQueryBlocksToFinish()
+			}
+		}()
 	}
 
 	logChan := cfg.syncer.GetLogsChan()
@@ -138,14 +144,14 @@ LOOP:
 				var transaction types.Transaction
 				attempts := 0
 				for {
-					transaction, _, err = cfg.syncer.GetTransaction(l.TxHash)
-					if err == nil {
+					transaction, _, funcErr = cfg.syncer.GetTransaction(l.TxHash)
+					if funcErr == nil {
 						break
 					} else {
 						log.Warn("Error getting transaction, attempting again", "hash", l.TxHash.String(), "err", err)
 						attempts++
 						if attempts > 50 {
-							return err
+							return funcErr
 						}
 						time.Sleep(500 * time.Millisecond)
 					}
@@ -157,12 +163,14 @@ LOOP:
 				l1InfoRoot := l.Data
 				if len(l1InfoRoot) != 32 {
 					log.Error(fmt.Sprintf("[%s] L1 info root is not 32 bytes", logPrefix), "tx-hash", l.TxHash.String())
-					return errors.New("l1 info root is not 32 bytes")
+					funcErr = errors.New("l1 info root is not 32 bytes")
+					return funcErr
 				}
 
 				batches, coinbase, limitTimestamp, err := l1_data.DecodeL1BatchData(transaction.GetData(), cfg.zkCfg.DAUrl)
 				if err != nil {
-					return err
+					funcErr = err
+					return funcErr
 				}
 
 				limitTimestampBytes := make([]byte, 8)
@@ -188,13 +196,9 @@ LOOP:
 					copy(data[52:], limitTimestampBytes)
 					copy(data[60:], batch)
 
-					if err := hermezDb.WriteL1BatchData(b, data); err != nil {
-						return err
+					if funcErr = hermezDb.WriteL1BatchData(b, data); funcErr != nil {
+						return funcErr
 					}
-
-					// disabled for now as it adds extra work into the process
-					// todo: find a way to only call this if debug logging is enabled
-					// debugLogProgress(batch, cfg, totalBlocks, logPrefix, b)
 
 					// check if we need to stop here based on config
 					if cfg.zkCfg.L1SyncStopBatch > 0 {
@@ -215,33 +219,25 @@ LOOP:
 			if !cfg.syncer.IsDownloading() {
 				break LOOP
 			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
 	lastCheckedBlock := cfg.syncer.GetLastCheckedL1Block()
 	if lastCheckedBlock > l1BlockHeight {
 		log.Info(fmt.Sprintf("[%s] Saving L1 block sync progress", logPrefix), "lastChecked", lastCheckedBlock)
-		if err := stages.SaveStageProgress(tx, stages.L1BlockSync, lastCheckedBlock); err != nil {
-			return err
+		if funcErr = stages.SaveStageProgress(tx, stages.L1BlockSync, lastCheckedBlock); funcErr != nil {
+			return funcErr
 		}
 	}
 
 	if freshTx {
-		if err := tx.Commit(); err != nil {
-			return err
+		if funcErr = tx.Commit(); funcErr != nil {
+			return funcErr
 		}
 	}
 
 	return nil
-}
-
-func debugLogProgress(batch []byte, cfg SequencerL1BlockSyncCfg, totalBlocks int, logPrefix string, b uint64) {
-	decoded, err := zktx.DecodeBatchL2Blocks(batch, cfg.zkCfg.SequencerInitialForkId)
-	if err != nil {
-		log.Error("Error decoding L1 batch", "batch", b, "err", err)
-	}
-	totalBlocks += len(decoded)
-	log.Debug(fmt.Sprintf("[%s] Wrote L1 batch", logPrefix), "batch", b, "blocks", len(decoded), "totalBlocks", totalBlocks)
 }
 
 func haveAllBatchesInDb(highestBatch uint64, cfg SequencerL1BlockSyncCfg, hermezDb *hermez_db.HermezDb) (bool, error) {

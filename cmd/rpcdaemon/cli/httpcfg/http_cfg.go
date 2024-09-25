@@ -32,15 +32,20 @@ type HttpCfg struct {
 	MaxTraces                uint64
 	WebsocketEnabled         bool
 	WebsocketCompression     bool
-	RpcAllowListFilePath     string
-	RpcBatchConcurrency      uint
-	RpcStreamingDisable      bool
-	DBReadConcurrency        int
-	TraceCompatibility       bool // Bug for bug compatibility for trace_ routines with OpenEthereum
-	TxPoolApiAddr            string
-	StateCache               kvcache.CoherentConfig
-	Snap                     ethconfig.Snapshot
-	Sync                     ethconfig.Sync
+	WebSocketListenAddress   string
+	WebSocketPort            int
+	WebsocketCORSDomain      []string
+	WebSocketApi             []string
+
+	RpcAllowListFilePath string
+	RpcBatchConcurrency  uint
+	RpcStreamingDisable  bool
+	DBReadConcurrency    int
+	TraceCompatibility   bool // Bug for bug compatibility for trace_ routines with OpenEthereum
+	TxPoolApiAddr        string
+	StateCache           kvcache.CoherentConfig
+	Snap                 ethconfig.Snapshot
+	Sync                 ethconfig.Sync
 
 	// GRPC server
 	GRPCServerEnabled      bool
@@ -66,7 +71,10 @@ type HttpCfg struct {
 	ReturnDataLimit int // Maximum number of bytes returned from calls (like eth_call)
 
 	// zkevm
-	DataStreamPort int
-	DataStreamHost string
-	L2RpcUrl       string
+	DataStreamPort                    int
+	DataStreamHost                    string
+	DataStreamWriteTimeout            time.Duration
+	DataStreamInactivityTimeout       time.Duration
+	DataStreamInactivityCheckInterval time.Duration
+	L2RpcUrl                          string
 }

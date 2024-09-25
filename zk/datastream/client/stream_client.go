@@ -24,24 +24,32 @@ type EntityDefinition struct {
 	Definition reflect.Type
 }
 
+const (
+	versionProto         = 2 // converted to proto
+	versionAddedBlockEnd = 3 // Added block end
+)
+
+var (
+	// ErrFileEntryNotFound denotes error that is returned when the certain file entry is not found in the datastream
+	ErrFileEntryNotFound = errors.New("file entry not found")
+)
+
 type StreamClient struct {
 	ctx          context.Context
 	server       string // Server address to connect IP:port
 	version      int
 	streamType   StreamType
 	conn         net.Conn
-	id           string            // Client id
-	Header       types.HeaderEntry // Header info received (from Header command)
-	checkTimeout time.Duration     // time to wait for data before reporting an error
+	id           string        // Client id
+	checkTimeout time.Duration // time to wait for data before reporting an error
 
 	// atomic
 	lastWrittenTime atomic.Int64
 	streaming       atomic.Bool
+	progress        atomic.Uint64
 
 	// Channels
-	batchStartChan chan types.BatchStart
-	l2BlockChan    chan types.FullL2Block
-	gerUpdatesChan chan types.GerUpdate // NB: unused from etrog onwards (forkid 7)
+	entryChan chan interface{}
 
 	// keeps track of the latest fork from the stream to assign to l2 blocks
 	currentFork uint64
@@ -55,6 +63,7 @@ const (
 	PtPadding = 0
 	PtHeader  = 1    // Just for the header page
 	PtData    = 2    // Data entry
+	PtDataRsp = 0xfe // PtDataRsp is packet type for command response with data
 	PtResult  = 0xff // Not stored/present in file (just for client command result)
 )
 
@@ -62,35 +71,136 @@ const (
 // server must be in format "url:port"
 func NewClient(ctx context.Context, server string, version int, checkTimeout time.Duration, latestDownloadedForkId uint16) *StreamClient {
 	c := &StreamClient{
-		ctx:            ctx,
-		checkTimeout:   checkTimeout,
-		server:         server,
-		version:        version,
-		streamType:     StSequencer,
-		id:             "",
-		batchStartChan: make(chan types.BatchStart, 1000),
-		l2BlockChan:    make(chan types.FullL2Block, 100000),
-		gerUpdatesChan: make(chan types.GerUpdate, 1000),
-		currentFork:    uint64(latestDownloadedForkId),
+		ctx:          ctx,
+		checkTimeout: checkTimeout,
+		server:       server,
+		version:      version,
+		streamType:   StSequencer,
+		id:           "",
+		entryChan:    make(chan interface{}, 100000),
+		currentFork:  uint64(latestDownloadedForkId),
 	}
 
 	return c
 }
 
-func (c *StreamClient) GetBatchStartChan() chan types.BatchStart {
-	return c.batchStartChan
+func (c *StreamClient) IsVersion3() bool {
+	return c.version >= versionAddedBlockEnd
 }
-func (c *StreamClient) GetL2BlockChan() chan types.FullL2Block {
-	return c.l2BlockChan
+
+func (c *StreamClient) GetEntryChan() chan interface{} {
+	return c.entryChan
 }
-func (c *StreamClient) GetGerUpdatesChan() chan types.GerUpdate {
-	return c.gerUpdatesChan
+
+// GetL2BlockByNumber queries the data stream by sending the L2 block start bookmark for the certain block number
+// and streams the changes for that block (including the transactions).
+// Note that this function is intended for on demand querying and it disposes the connection after it ends.
+func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, int, error) {
+	if _, err := c.EnsureConnected(); err != nil {
+		return nil, -1, err
+	}
+	defer c.Stop()
+
+	var (
+		l2Block   *types.FullL2Block
+		err       error
+		isL2Block bool
+	)
+
+	bookmark := types.NewBookmarkProto(blockNum, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
+	bookmarkRaw, err := bookmark.Marshal()
+	if err != nil {
+		return nil, -1, err
+	}
+
+	re, err := c.initiateDownloadBookmark(bookmarkRaw)
+	if err != nil {
+		errorCode := -1
+		if re != nil {
+			errorCode = int(re.ErrorNum)
+		}
+		return nil, errorCode, err
+	}
+
+	for l2Block == nil {
+		select {
+		case <-c.ctx.Done():
+			errorCode := -1
+			if re != nil {
+				errorCode = int(re.ErrorNum)
+			}
+			return l2Block, errorCode, nil
+		default:
+		}
+
+		parsedEntry, err := ReadParsedProto(c)
+		if err != nil {
+			return nil, -1, err
+		}
+
+		l2Block, isL2Block = parsedEntry.(*types.FullL2Block)
+		if isL2Block {
+			break
+		}
+	}
+
+	if l2Block.L2BlockNumber != blockNum {
+		return nil, -1, fmt.Errorf("expected block number %d but got %d", blockNum, l2Block.L2BlockNumber)
+	}
+
+	return l2Block, types.CmdErrOK, nil
 }
+
+// GetLatestL2Block queries the data stream by reading the header entry and based on total entries field,
+// it retrieves the latest File entry that is of EntryTypeL2Block type.
+// Note that this function is intended for on demand querying and it disposes the connection after it ends.
+func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error) {
+	if _, err := c.EnsureConnected(); err != nil {
+		return nil, err
+	}
+	defer c.Stop()
+
+	h, err := c.GetHeader()
+	if err != nil {
+		return nil, err
+	}
+
+	latestEntryNum := h.TotalEntries - 1
+
+	for l2Block == nil && latestEntryNum > 0 {
+		if err := c.sendEntryCmdWrapper(latestEntryNum); err != nil {
+			return nil, err
+		}
+
+		entry, err := c.NextFileEntry()
+		if err != nil {
+			return nil, err
+		}
+
+		if entry.EntryType == types.EntryTypeL2Block {
+			if l2Block, err = types.UnmarshalL2Block(entry.Data); err != nil {
+				return nil, err
+			}
+		}
+
+		latestEntryNum--
+	}
+
+	if latestEntryNum == 0 {
+		return nil, errors.New("failed to retrieve the latest block from the data stream")
+	}
+
+	return l2Block, nil
+}
+
 func (c *StreamClient) GetLastWrittenTimeAtomic() *atomic.Int64 {
 	return &c.lastWrittenTime
 }
 func (c *StreamClient) GetStreamingAtomic() *atomic.Bool {
 	return &c.streaming
+}
+func (c *StreamClient) GetProgressAtomic() *atomic.Uint64 {
+	return &c.progress
 }
 
 // Opens a TCP connection to the server
@@ -108,87 +218,134 @@ func (c *StreamClient) Start() error {
 }
 
 func (c *StreamClient) Stop() {
+	if c.conn == nil {
+		return
+	}
+	if err := c.sendStopCmd(); err != nil {
+		log.Warn(fmt.Sprintf("Failed to send the stop command to the data stream server: %s", err))
+	}
 	c.conn.Close()
+	c.conn = nil
 
-	close(c.l2BlockChan)
-	close(c.gerUpdatesChan)
+	close(c.entryChan)
 }
 
 // Command header: Get status
 // Returns the current status of the header.
 // If started, terminate the connection.
-func (c *StreamClient) GetHeader() error {
+func (c *StreamClient) GetHeader() (*types.HeaderEntry, error) {
 	if err := c.sendHeaderCmd(); err != nil {
-		return fmt.Errorf("%s send header error: %v", c.id, err)
+		return nil, fmt.Errorf("%s send header error: %v", c.id, err)
 	}
 
 	// Read packet
 	packet, err := readBuffer(c.conn, 1)
 	if err != nil {
-		return fmt.Errorf("%s read buffer: %v", c.id, err)
+		return nil, fmt.Errorf("%s read buffer: %v", c.id, err)
 	}
 
 	// Check packet type
 	if packet[0] != PtResult {
-		return fmt.Errorf("%s error expecting result packet type %d and received %d", c.id, PtResult, packet[0])
+		return nil, fmt.Errorf("%s error expecting result packet type %d and received %d", c.id, PtResult, packet[0])
 	}
 
 	// Read server result entry for the command
 	r, err := c.readResultEntry(packet)
 	if err != nil {
-		return fmt.Errorf("%s read result entry error: %v", c.id, err)
+		return nil, fmt.Errorf("%s read result entry error: %v", c.id, err)
 	}
 	if err := r.GetError(); err != nil {
-		return fmt.Errorf("%s got Result error code %d: %v", c.id, r.ErrorNum, err)
+		return nil, fmt.Errorf("%s got Result error code %d: %v", c.id, r.ErrorNum, err)
 	}
 
 	// Read header entry
 	h, err := c.readHeaderEntry()
 	if err != nil {
-		return fmt.Errorf("%s read header entry error: %v", c.id, err)
+		return nil, fmt.Errorf("%s read header entry error: %v", c.id, err)
 	}
 
-	c.Header = *h
+	return h, nil
+}
+
+// sendEntryCmdWrapper sends CmdEntry command and reads packet type and decodes result entry.
+func (c *StreamClient) sendEntryCmdWrapper(entryNum uint64) error {
+	if err := c.sendEntryCmd(entryNum); err != nil {
+		return err
+	}
+
+	if re, err := c.readPacketAndDecodeResultEntry(); err != nil {
+		return fmt.Errorf("failed to retrieve the result entry: %w", err)
+	} else if err := re.GetError(); err != nil {
+		return err
+	}
 
 	return nil
 }
 
-// sends start command, reads entries until limit reached and sends end command
-func (c *StreamClient) ReadEntries(bookmark *types.BookmarkProto, l2BlocksAmount int) (*[]types.FullL2Block, *[]types.GerUpdate, []types.BookmarkProto, []types.BookmarkProto, uint64, error) {
+func (c *StreamClient) ExecutePerFile(bookmark *types.BookmarkProto, function func(file *types.FileEntry) error) error {
 	// Get header from server
-	if err := c.GetHeader(); err != nil {
-		return nil, nil, nil, nil, 0, fmt.Errorf("%s get header error: %v", c.id, err)
+	header, err := c.GetHeader()
+	if err != nil {
+		return fmt.Errorf("%s get header error: %v", c.id, err)
 	}
 
 	protoBookmark, err := bookmark.Marshal()
 	if err != nil {
-		return nil, nil, nil, nil, 0, fmt.Errorf("failed to marshal bookmark: %v", err)
+		return fmt.Errorf("failed to marshal bookmark: %v", err)
 	}
 
-	if err := c.initiateDownloadBookmark(protoBookmark); err != nil {
-		return nil, nil, nil, nil, 0, err
+	if _, err := c.initiateDownloadBookmark(protoBookmark); err != nil {
+		return err
+	}
+	count := uint64(0)
+	logTicker := time.NewTicker(10 * time.Second)
+
+	for {
+		select {
+		case <-logTicker.C:
+			fmt.Println("Entries read count: ", count)
+		default:
+		}
+		if header.TotalEntries == count {
+			break
+		}
+		file, err := c.NextFileEntry()
+		if err != nil {
+			return fmt.Errorf("reading file entry: %v", err)
+		}
+		if err := function(file); err != nil {
+			return fmt.Errorf("executing function: %v", err)
+
+		}
+		count++
 	}
 
-	fullL2Blocks, gerUpates, batchBookmarks, blockBookmarks, entriesRead, err := c.readFullL2Blocks(l2BlocksAmount)
-	if err != nil {
-		return nil, nil, nil, nil, 0, err
+	return nil
+}
+
+func (c *StreamClient) EnsureConnected() (bool, error) {
+	if c.conn == nil {
+		if err := c.tryReConnect(); err != nil {
+			return false, fmt.Errorf("failed to reconnect the datastream client: %w", err)
+		}
+		c.entryChan = make(chan interface{}, 100000)
 	}
 
-	return fullL2Blocks, gerUpates, batchBookmarks, blockBookmarks, entriesRead, nil
+	return true, nil
 }
 
 // reads entries to the end of the stream
 // at end will wait for new entries to arrive
-func (c *StreamClient) ReadAllEntriesToChannel(bookmark *types.BookmarkProto) error {
+func (c *StreamClient) ReadAllEntriesToChannel() error {
 	c.streaming.Store(true)
 	defer c.streaming.Store(false)
 
-	// if connection is lost, try to reconnect
-	// this occurs when all 5 attempts failed on previous run
-	if c.conn == nil {
-		if err := c.tryReConnect(); err != nil {
-			return fmt.Errorf("failed to reconnect the datastream client: %W", err)
-		}
+	var bookmark *types.BookmarkProto
+	progress := c.progress.Load()
+	if progress == 0 {
+		bookmark = types.NewBookmarkProto(0, datastream.BookmarkType_BOOKMARK_TYPE_BATCH)
+	} else {
+		bookmark = types.NewBookmarkProto(progress, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
 	}
 
 	protoBookmark, err := bookmark.Marshal()
@@ -197,7 +354,7 @@ func (c *StreamClient) ReadAllEntriesToChannel(bookmark *types.BookmarkProto) er
 	}
 
 	// send start command
-	if err := c.initiateDownloadBookmark(protoBookmark); err != nil {
+	if _, err := c.initiateDownloadBookmark(protoBookmark); err != nil {
 		return err
 	}
 
@@ -212,7 +369,7 @@ func (c *StreamClient) ReadAllEntriesToChannel(bookmark *types.BookmarkProto) er
 		}
 
 		// reset the channels as there could be data ahead of the bookmark we want to track here.
-		c.resetChannels()
+		// c.resetChannels()
 
 		return err2
 	}
@@ -221,37 +378,31 @@ func (c *StreamClient) ReadAllEntriesToChannel(bookmark *types.BookmarkProto) er
 }
 
 // runs the prerequisites for entries download
-func (c *StreamClient) initiateDownloadBookmark(bookmark []byte) error {
-	// send start command
-	if err := c.sendStartBookmarkCmd(bookmark); err != nil {
-		return err
+func (c *StreamClient) initiateDownloadBookmark(bookmark []byte) (*types.ResultEntry, error) {
+	// send CmdStartBookmark command
+	if err := c.sendBookmarkCmd(bookmark, true); err != nil {
+		return nil, err
 	}
 
-	if err := c.afterStartCommand(); err != nil {
-		return fmt.Errorf("after start command error: %v", err)
+	re, err := c.afterStartCommand()
+	if err != nil {
+		return re, fmt.Errorf("after start command error: %v", err)
 	}
 
-	return nil
+	return re, nil
 }
 
-func (c *StreamClient) afterStartCommand() error {
-	// Read packet
-	packet, err := readBuffer(c.conn, 1)
+func (c *StreamClient) afterStartCommand() (*types.ResultEntry, error) {
+	re, err := c.readPacketAndDecodeResultEntry()
 	if err != nil {
-		return fmt.Errorf("read buffer error %v", err)
+		return nil, err
 	}
 
-	// Read server result entry for the command
-	r, err := c.readResultEntry(packet)
-	if err != nil {
-		return fmt.Errorf("read result entry error: %v", err)
+	if err := re.GetError(); err != nil {
+		return re, fmt.Errorf("got Result error code %d: %v", re.ErrorNum, err)
 	}
 
-	if err := r.GetError(); err != nil {
-		return fmt.Errorf("got Result error code %d: %v", r.ErrorNum, err)
-	}
-
-	return nil
+	return re, nil
 }
 
 // reads all entries from the server and sends them to a channel
@@ -272,70 +423,48 @@ LOOP:
 			c.conn.SetReadDeadline(time.Now().Add(c.checkTimeout))
 		}
 
-		fullBlock, batchStart, batchEnd, gerUpdates, batchBookmark, blockBookmark, _, _, localErr := c.readFullBlockProto()
+		parsedProto, localErr := ReadParsedProto(c)
 		if localErr != nil {
 			err = localErr
 			break
 		}
-
-		// skip over bookmarks (but only when fullblock is nil or will miss l2 blocks)
-		if (batchBookmark != nil || blockBookmark != nil) && fullBlock == nil {
-			continue
-		}
-
-		// write batch starts to channel
-		if batchStart != nil {
-			c.currentFork = (*batchStart).ForkId
-			c.batchStartChan <- *batchStart
-			continue
-		}
-
-		if gerUpdates != nil {
-			for _, gerUpdate := range *gerUpdates {
-				c.gerUpdatesChan <- gerUpdate
-			}
-		}
-
-		// we could have a scenario where a batch start is immediately followed by a batch end,
-		// so we need to report an error if the batch end is nil, and we have no block to process
-		if fullBlock == nil && batchEnd == nil {
-			return fmt.Errorf("block is nil, batch")
-		}
-
-		if batchEnd != nil {
-			fullBlock.BatchEnd = true
-			fullBlock.LocalExitRoot = batchEnd.LocalExitRoot
-		}
-
-		// ensure the block is assigned the currently known fork
-		if fullBlock != nil {
-			fullBlock.ForkId = c.currentFork
-		}
-
 		c.lastWrittenTime.Store(time.Now().UnixNano())
-		log.Trace("writing block to channel", "blockNumber", fullBlock.L2BlockNumber, "batchNumber", fullBlock.BatchNumber)
-		c.l2BlockChan <- *fullBlock
+
+		switch parsedProto := parsedProto.(type) {
+		case *types.BookmarkProto:
+			continue
+		case *types.BatchStart:
+			c.currentFork = parsedProto.ForkId
+			c.entryChan <- parsedProto
+		case *types.GerUpdate:
+			c.entryChan <- parsedProto
+		case *types.BatchEnd:
+			c.entryChan <- parsedProto
+		case *types.FullL2Block:
+			parsedProto.ForkId = c.currentFork
+			log.Trace("writing block to channel", "blockNumber", parsedProto.L2BlockNumber, "batchNumber", parsedProto.BatchNumber)
+			c.entryChan <- parsedProto
+		default:
+			err = fmt.Errorf("unexpected entry type: %v", parsedProto)
+			break LOOP
+		}
 	}
 
 	return err
 }
 
-func (c *StreamClient) resetChannels() {
-	c.batchStartChan = make(chan types.BatchStart, 1000)
-	c.l2BlockChan = make(chan types.FullL2Block, 100000)
-	c.gerUpdatesChan = make(chan types.GerUpdate, 1000)
-}
-
 func (c *StreamClient) tryReConnect() error {
 	var err error
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 50; i++ {
 		if c.conn != nil {
 			if err := c.conn.Close(); err != nil {
+				log.Warn(fmt.Sprintf("[%d. iteration] failed to close the DS connection: %s", i+1, err))
 				return err
 			}
 			c.conn = nil
 		}
 		if err = c.Start(); err != nil {
+			log.Warn(fmt.Sprintf("[%d. iteration] failed to start the DS connection: %s", i+1, err))
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -345,305 +474,237 @@ func (c *StreamClient) tryReConnect() error {
 	return err
 }
 
-// reads a set amount of l2blocks from the server and returns them
-// returns the parsed FullL2Blocks with transactions and the amount of entries read
-func (c *StreamClient) readFullL2Blocks(l2BlocksAmount int) (*[]types.FullL2Block, *[]types.GerUpdate, []types.BookmarkProto, []types.BookmarkProto, uint64, error) {
-	fullL2Blocks := []types.FullL2Block{}
-	totalGerUpdates := []types.GerUpdate{}
-	entriesRead := uint64(0)
-	batchBookmarks := []types.BookmarkProto{}
-	blockBookmarks := []types.BookmarkProto{}
-	fromEntry := uint64(0)
-
-	for {
-		if len(fullL2Blocks) >= l2BlocksAmount || entriesRead+fromEntry >= c.Header.TotalEntries {
-			break
-		}
-
-		fullBlock, _, _, gerUpdates, batchBookmark, blockBookmark, fe, er, err := c.readFullBlockProto()
-
-		if err != nil {
-			return nil, nil, nil, nil, 0, fmt.Errorf("failed to read full block: %v", err)
-		}
-
-		// skip over bookmarks (but only when fullblock is nil or will miss l2 blocks)
-		if (batchBookmark != nil || blockBookmark != nil) && fullBlock == nil {
-			continue
-		}
-
-		if fromEntry == 0 {
-			fromEntry = fe
-		}
-
-		if gerUpdates != nil {
-			totalGerUpdates = append(totalGerUpdates, *gerUpdates...)
-		}
-		entriesRead += er
-		if fullBlock != nil {
-			fullL2Blocks = append(fullL2Blocks, *fullBlock)
-		}
-		if batchBookmark != nil {
-			batchBookmarks = append(batchBookmarks, *batchBookmark)
-		}
-		if blockBookmark != nil {
-			blockBookmarks = append(blockBookmarks, *blockBookmark)
-		}
-	}
-
-	return &fullL2Blocks, &totalGerUpdates, batchBookmarks, blockBookmarks, entriesRead, nil
+type FileEntryIterator interface {
+	NextFileEntry() (*types.FileEntry, error)
 }
 
-func (c *StreamClient) readFullBlockProto() (*types.FullL2Block, *types.BatchStart, *types.BatchEnd, *[]types.GerUpdate, *types.BookmarkProto, *types.BookmarkProto, uint64, uint64, error) {
-	entriesRead := uint64(0)
-
-	file, err := c.readFileEntry()
+func ReadParsedProto(iterator FileEntryIterator) (
+	parsedEntry interface{},
+	err error,
+) {
+	file, err := iterator.NextFileEntry()
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("read file entry error: %v", err)
+		err = fmt.Errorf("read file entry error: %w", err)
+		return
 	}
-	entriesRead++
-	fromEntry := file.EntryNum
 
-	gerUpdates := []types.GerUpdate{}
-	var batchBookmark *types.BookmarkProto
-	var blockBookmark *types.BookmarkProto
-	var batchStart *types.BatchStart
-	var batchEnd *types.BatchEnd
+	if file == nil {
+		return nil, nil
+	}
 
-	for !file.IsL2Block() && !file.IsBatchStart() && !file.IsBatchEnd() {
-		if file.IsBookmark() {
-			bookmark, err := types.UnmarshalBookmark(file.Data)
-			if err != nil {
-				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse bookmark error: %v", err)
+	switch file.EntryType {
+	case types.BookmarkEntryType:
+		parsedEntry, err = types.UnmarshalBookmark(file.Data)
+	case types.EntryTypeGerUpdate:
+		parsedEntry, err = types.DecodeGerUpdateProto(file.Data)
+	case types.EntryTypeBatchStart:
+		parsedEntry, err = types.UnmarshalBatchStart(file.Data)
+	case types.EntryTypeBatchEnd:
+		parsedEntry, err = types.UnmarshalBatchEnd(file.Data)
+	case types.EntryTypeL2Block:
+		var l2Block *types.FullL2Block
+		if l2Block, err = types.UnmarshalL2Block(file.Data); err != nil {
+			return
+		}
+
+		txs := []types.L2TransactionProto{}
+
+		var innerFile *types.FileEntry
+		var l2Tx *types.L2TransactionProto
+	LOOP:
+		for {
+			if innerFile, err = iterator.NextFileEntry(); err != nil {
+				return
 			}
-			if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_BATCH {
-				batchBookmark = bookmark
-				log.Trace("batch bookmark", "bookmark", bookmark)
-				return nil, nil, nil, &gerUpdates, batchBookmark, nil, 0, 0, nil
-			} else {
-				blockBookmark = bookmark
-				log.Trace("block bookmark", "bookmark", bookmark)
-				return nil, nil, nil, &gerUpdates, nil, blockBookmark, 0, 0, nil
-			}
-		} else if file.IsGerUpdate() {
-			gerUpdate, err := types.DecodeGerUpdateProto(file.Data)
-			if err != nil {
-				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse gerUpdate error: %v", err)
-			}
-			log.Trace("ger update", "ger", gerUpdate)
-			gerUpdates = append(gerUpdates, *gerUpdate)
-		} else {
-			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("unexpected entry type: %d", file.EntryType)
-		}
 
-		file, err = c.readFileEntry()
-		if err != nil {
-			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("read file entry error: %v", err)
-		}
-		entriesRead++
-	}
-
-	var l2Block *types.FullL2Block
-
-	// If starting with a batch, return so it can be held whilst blocks are added to it
-	if file.IsBatchStart() {
-		batchStart, err = types.UnmarshalBatchStart(file.Data)
-		if err != nil {
-			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse batch start error: %v", err)
-		}
-		log.Trace("batch start", "batchStart", batchStart)
-		return nil, batchStart, nil, &gerUpdates, nil, nil, fromEntry, entriesRead, nil
-	}
-
-	if file.IsBatchEnd() {
-		batchEnd, err = types.UnmarshalBatchEnd(file.Data)
-		if err != nil {
-			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse batch end error: %v", err)
-		}
-		log.Trace("batch end", "batchEnd", batchEnd)
-		// we might not have a block here if the batch end was immediately after the batch start
-		if l2Block == nil {
-			l2Block = &types.FullL2Block{}
-		}
-		return l2Block, nil, batchEnd, &gerUpdates, nil, nil, fromEntry, entriesRead, nil
-	}
-
-	// Now handle the L2 block
-	if file.IsL2Block() {
-		l2Block, err = types.UnmarshalL2Block(file.Data)
-		if err != nil {
-			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse L2 block error: %v", err)
-		}
-		log.Trace("l2 block", "l2Block", l2Block)
-
-		file, err = c.readFileEntry()
-		if err != nil {
-			return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("read file entry error: %v", err)
-		}
-		entriesRead++
-
-		// if not batch end or bookmark (l2 block - error on batch), then it must be a transaction
-		for !file.IsBatchEnd() && !file.IsBookmark() {
-			if file.IsL2Tx() {
-				l2Tx, err := types.UnmarshalTx(file.Data)
-				if err != nil {
-					return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse L2 transaction error: %v", err)
+			if innerFile.IsL2Tx() {
+				if l2Tx, err = types.UnmarshalTx(innerFile.Data); err != nil {
+					return
 				}
-				l2Block.L2Txs = append(l2Block.L2Txs, *l2Tx)
-				log.Trace("l2tx", "tx", l2Tx)
+				txs = append(txs, *l2Tx)
+			} else if innerFile.IsL2BlockEnd() {
+				var l2BlockEnd *types.L2BlockEndProto
+				if l2BlockEnd, err = types.UnmarshalL2BlockEnd(innerFile.Data); err != nil {
+					return
+				}
+				if l2BlockEnd.GetBlockNumber() != l2Block.L2BlockNumber {
+					err = fmt.Errorf("block end number (%d) not equal to block number (%d)", l2BlockEnd.GetBlockNumber(), l2Block.L2BlockNumber)
+					return
+				}
+				break LOOP
+			} else if innerFile.IsBookmark() {
+				var bookmark *types.BookmarkProto
+				if bookmark, err = types.UnmarshalBookmark(innerFile.Data); err != nil || bookmark == nil {
+					return
+				}
+				if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK {
+					break LOOP
+				} else {
+					err = fmt.Errorf("unexpected bookmark type inside block: %v", bookmark.Type())
+					return
+				}
+			} else if innerFile.IsBatchEnd() {
+				if _, err = types.UnmarshalBatchEnd(file.Data); err != nil {
+					return
+				}
+				break LOOP
 			} else {
-				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("unexpected entry type, expected transaction or batch end: %d", file.EntryType)
+				err = fmt.Errorf("unexpected entry type inside a block: %d", innerFile.EntryType)
+				return
 			}
-
-			file, err = c.readFileEntry()
-			if err != nil {
-				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("read file entry error: %v", err)
-			}
-			entriesRead++
 		}
 
-		if file.IsBatchEnd() {
-			batchEnd, err = types.UnmarshalBatchEnd(file.Data)
-			if err != nil {
-				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse batch end error: %v", err)
-			}
-			log.Trace("batch end", "batchEnd", batchEnd)
-		}
-		if file.IsBookmark() {
-			bookmark, err := types.UnmarshalBookmark(file.Data)
-			if err != nil {
-				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("parse bookmark error: %v", err)
-			}
-			if bookmark.BookmarkType() == datastream.BookmarkType_BOOKMARK_TYPE_BATCH {
-				batchBookmark = bookmark
-				log.Trace("batch bookmark", "bookmark", bookmark)
-				return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("unexpected bookmark type: %d", bookmark.BookmarkType())
-			} else {
-				blockBookmark = bookmark
-				log.Trace("block bookmark", "bookmark", bookmark)
-			}
-		}
-	} else {
-		return nil, nil, nil, nil, nil, nil, 0, 0, fmt.Errorf("unexpected entry type: %d", file.EntryType)
+		l2Block.L2Txs = txs
+		parsedEntry = l2Block
+		return
+	case types.EntryTypeL2BlockEnd:
+		log.Debug(fmt.Sprintf("retrieved EntryTypeL2BlockEnd: %+v", file))
+		return
+	case types.EntryTypeL2Tx:
+		err = errors.New("unexpected L2 tx entry, found outside of block")
+	default:
+		err = fmt.Errorf("unexpected entry type: %d", file.EntryType)
 	}
-
-	return l2Block, batchStart, batchEnd, &gerUpdates, batchBookmark, blockBookmark, fromEntry, entriesRead, nil
+	return
 }
 
 // reads file bytes from socket and tries to parse them
 // returns the parsed FileEntry
-func (c *StreamClient) readFileEntry() (*types.FileEntry, error) {
+func (c *StreamClient) NextFileEntry() (file *types.FileEntry, err error) {
 	// Read packet type
 	packet, err := readBuffer(c.conn, 1)
 	if err != nil {
-		return &types.FileEntry{}, fmt.Errorf("failed to read packet type: %v", err)
+		return file, fmt.Errorf("failed to read packet type: %v", err)
 	}
 
+	packetType := packet[0]
 	// Check packet type
-	if packet[0] == PtResult {
+	if packetType == PtResult {
 		// Read server result entry for the command
 		r, err := c.readResultEntry(packet)
 		if err != nil {
-			return &types.FileEntry{}, err
+			return file, err
 		}
 		if err := r.GetError(); err != nil {
-			return &types.FileEntry{}, fmt.Errorf("got Result error code %d: %v", r.ErrorNum, err)
+			return file, fmt.Errorf("got Result error code %d: %v", r.ErrorNum, err)
 		}
-		return &types.FileEntry{}, nil
-	} else if packet[0] != PtData {
-		return &types.FileEntry{}, fmt.Errorf("error expecting data packet type %d and received %d", PtData, packet[0])
+		return file, nil
+	} else if packetType != PtData && packetType != PtDataRsp {
+		return file, fmt.Errorf("expected data packet type %d or %d and received %d", PtData, PtDataRsp, packetType)
 	}
 
 	// Read the rest of fixed size fields
 	buffer, err := readBuffer(c.conn, types.FileEntryMinSize-1)
 	if err != nil {
-		return &types.FileEntry{}, fmt.Errorf("error reading file bytes: %v", err)
+		return file, fmt.Errorf("error reading file bytes: %v", err)
+	}
+
+	if packetType != PtData {
+		packet[0] = PtData
 	}
 	buffer = append(packet, buffer...)
 
 	// Read variable field (data)
 	length := binary.BigEndian.Uint32(buffer[1:5])
 	if length < types.FileEntryMinSize {
-		return &types.FileEntry{}, errors.New("error reading data entry: wrong data length")
+		return file, errors.New("error reading data entry: wrong data length")
 	}
 
 	// Read rest of the file data
 	bufferAux, err := readBuffer(c.conn, length-types.FileEntryMinSize)
 	if err != nil {
-		return &types.FileEntry{}, fmt.Errorf("error reading file data bytes: %v", err)
+		return file, fmt.Errorf("error reading file data bytes: %v", err)
 	}
 	buffer = append(buffer, bufferAux...)
 
 	// Decode binary data to data entry struct
-	file, err := types.DecodeFileEntry(buffer)
-	if err != nil {
-		return &types.FileEntry{}, fmt.Errorf("decode file entry error: %v", err)
+	if file, err = types.DecodeFileEntry(buffer); err != nil {
+		return file, fmt.Errorf("decode file entry error: %v", err)
 	}
 
-	return file, nil
+	if file.EntryType == types.EntryTypeNotFound {
+		return file, ErrFileEntryNotFound
+	}
+
+	return
 }
 
 // reads header bytes from socket and tries to parse them
 // returns the parsed HeaderEntry
-func (c *StreamClient) readHeaderEntry() (*types.HeaderEntry, error) {
+func (c *StreamClient) readHeaderEntry() (h *types.HeaderEntry, err error) {
 
 	// Read header stream bytes
 	binaryHeader, err := readBuffer(c.conn, types.HeaderSizePreEtrog)
 	if err != nil {
-		return &types.HeaderEntry{}, fmt.Errorf("failed to read header bytes %v", err)
+		return h, fmt.Errorf("failed to read header bytes %v", err)
 	}
 
-	var headLength uint32
-	headLength = binary.BigEndian.Uint32(binaryHeader[1:5])
+	headLength := binary.BigEndian.Uint32(binaryHeader[1:5])
 	if headLength == types.HeaderSize {
 		// Read the rest of fixed size fields
 		buffer, err := readBuffer(c.conn, types.HeaderSize-types.HeaderSizePreEtrog)
 		if err != nil {
-			return &types.HeaderEntry{}, fmt.Errorf("failed to read header bytes %v", err)
+			return h, fmt.Errorf("failed to read header bytes %v", err)
 		}
 		binaryHeader = append(binaryHeader, buffer...)
 	}
 
 	// Decode bytes stream to header entry struct
-	h, err := types.DecodeHeaderEntry(binaryHeader)
-	if err != nil {
-		return &types.HeaderEntry{}, fmt.Errorf("error decoding binary header: %v", err)
+	if h, err = types.DecodeHeaderEntry(binaryHeader); err != nil {
+		return h, fmt.Errorf("error decoding binary header: %v", err)
 	}
 
-	return h, nil
+	return
 }
 
 // reads result bytes and tries to parse them
 // returns the parsed ResultEntry
-func (c *StreamClient) readResultEntry(packet []byte) (*types.ResultEntry, error) {
+func (c *StreamClient) readResultEntry(packet []byte) (re *types.ResultEntry, err error) {
 	if len(packet) != 1 {
-		return &types.ResultEntry{}, fmt.Errorf("expected packet size of 1, got: %d", len(packet))
+		return re, fmt.Errorf("expected packet size of 1, got: %d", len(packet))
 	}
 
 	// Read the rest of fixed size fields
 	buffer, err := readBuffer(c.conn, types.ResultEntryMinSize-1)
 	if err != nil {
-		return &types.ResultEntry{}, fmt.Errorf("failed to read main result bytes %v", err)
+		return re, fmt.Errorf("failed to read main result bytes %v", err)
 	}
 	buffer = append(packet, buffer...)
 
 	// Read variable field (errStr)
 	length := binary.BigEndian.Uint32(buffer[1:5])
 	if length < types.ResultEntryMinSize {
-		return &types.ResultEntry{}, fmt.Errorf("%s Error reading result entry", c.id)
+		return re, fmt.Errorf("%s Error reading result entry", c.id)
 	}
 
 	// read the rest of the result
 	bufferAux, err := readBuffer(c.conn, length-types.ResultEntryMinSize)
 	if err != nil {
-		return &types.ResultEntry{}, fmt.Errorf("failed to read result errStr bytes %v", err)
+		return re, fmt.Errorf("failed to read result errStr bytes %v", err)
 	}
 	buffer = append(buffer, bufferAux...)
 
 	// Decode binary entry result
-	re, err := types.DecodeResultEntry(buffer)
-	if err != nil {
-		return &types.ResultEntry{}, fmt.Errorf("decode result entry error: %v", err)
+	if re, err = types.DecodeResultEntry(buffer); err != nil {
+		return re, fmt.Errorf("decode result entry error: %v", err)
 	}
 
 	return re, nil
+}
+
+// readPacketAndDecodeResultEntry reads the packet from the connection and tries to decode the ResultEntry from it.
+func (c *StreamClient) readPacketAndDecodeResultEntry() (*types.ResultEntry, error) {
+	// Read packet
+	packet, err := readBuffer(c.conn, 1)
+	if err != nil {
+		return nil, fmt.Errorf("read buffer error: %w", err)
+	}
+
+	// Read server result entry for the command
+	r, err := c.readResultEntry(packet)
+	if err != nil {
+		return nil, fmt.Errorf("read result entry error: %w", err)
+	}
+
+	return r, nil
 }
