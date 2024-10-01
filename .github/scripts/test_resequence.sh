@@ -49,7 +49,7 @@ wait_for_l1_batch() {
             current_batch=$(cast logs --rpc-url "$(kurtosis port print cdk-v1 el-1-geth-lighthouse rpc)" --address 0x1Fe038B54aeBf558638CA51C91bC8cCa06609e91 --from-block 0 -j | jq -r '.[] | select(.topics[0] == "0x3e54d0825ed78523037d00a81759237eb436ce774bd546993ee67a1b67b6e766") | .topics[1]' | tail -n 1 | sed 's/^0x//')
             current_batch=$((16#$current_batch))
         elif [ "$batch_type" = "verified" ]; then
-            current_batch=$(cast rpc zkevm_verifiedBatchNumber --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-node-001 http-rpc)" | sed 's/^"//;s/"$//')
+            current_batch=$(cast rpc zkevm_verifiedBatchNumber --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-node-001 rpc)" | sed 's/^"//;s/"$//')
         else
             echo "Invalid batch type. Use 'virtual' or 'verified'."
             return 1
@@ -72,7 +72,9 @@ wait_for_l1_batch() {
 
 stop_cdk_erigon_sequencer() {
     echo "Stopping cdk-erigon"
-    kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "pkill -SIGINT cdk-erigon"
+    kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "pkill -SIGTRAP proc-runner.sh" || true
+    sleep 1
+    kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "pkill -SIGINT cdk-erigon" || true
     sleep 30
 }
 
@@ -91,7 +93,7 @@ kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "nohup cdk-erigon --pprof=
 sleep 30
 
 echo "Running loadtest using polycli"
-/usr/local/bin/polycli loadtest --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-node-001 http-rpc)" --private-key "0x12d7de8621a77640c9241b2595ba78ce443d05e94090365ab3bb5e19df82c625" --verbosity 600 --requests 2000 --rate-limit 500  --mode uniswapv3 --legacy
+/usr/local/bin/polycli loadtest --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-node-001 rpc)" --private-key "0x12d7de8621a77640c9241b2595ba78ce443d05e94090365ab3bb5e19df82c625" --verbosity 600 --requests 2000 --rate-limit 500  --mode uniswapv3 --legacy
 
 echo "Waiting for batch virtualization"
 if ! wait_for_l1_batch 600 "virtual"; then
@@ -141,7 +143,7 @@ echo "Getting block hash from sequencer"
 sequencer_hash=$(cast block $comparison_block --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)" | grep "hash" | awk '{print $2}')
 
 echo "Getting block hash from node"
-node_hash=$(cast block $comparison_block --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-node-001 http-rpc)" | grep "hash" | awk '{print $2}')
+node_hash=$(cast block $comparison_block --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-node-001 rpc)" | grep "hash" | awk '{print $2}')
 
 echo "Sequencer block hash: $sequencer_hash"
 echo "Node block hash: $node_hash"
