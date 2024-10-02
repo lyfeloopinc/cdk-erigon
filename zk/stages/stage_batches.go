@@ -299,17 +299,19 @@ LOOP:
 
 				// skip if we already have this block
 				if entry.L2BlockNumber < lastBlockHeight+1 {
-					log.Warn(fmt.Sprintf("[%s] Unwinding to block %d", logPrefix, entry.L2BlockNumber))
+					log.Info(fmt.Sprintf("[%s] Skipping block %d, already processed", logPrefix, entry.L2BlockNumber))
+					continue
+				}
+
+				// if the block number isn't last + 1 then we've skipped AHEAD (see above logic to continue if we're behind)
+				if entry.L2BlockNumber != lastBlockHeight+1 {
+					log.Warn(fmt.Sprintf("[%s] Stream ahead of node, unwinding to block %d", logPrefix, entry.L2BlockNumber))
 					badBlock, err := eriDb.ReadCanonicalHash(entry.L2BlockNumber)
 					if err != nil {
 						return fmt.Errorf("failed to get bad block: %v", err)
 					}
 					u.UnwindTo(entry.L2BlockNumber, badBlock)
-				}
-
-				// check for sequential block numbers
-				if entry.L2BlockNumber != lastBlockHeight+1 {
-					return fmt.Errorf("block number is not sequential, expected %d, got %d", lastBlockHeight+1, entry.L2BlockNumber)
+					return nil
 				}
 
 				// batch boundary - record the highest hashable block number (last block in last full batch)
