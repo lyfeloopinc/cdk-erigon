@@ -228,8 +228,6 @@ func (c *StreamClient) Stop() {
 	}
 	c.conn.Close()
 	c.conn = nil
-
-	c.clearEntryCHannel()
 }
 
 // Command header: Get status
@@ -326,17 +324,21 @@ func (c *StreamClient) ExecutePerFile(bookmark *types.BookmarkProto, function fu
 }
 
 func (c *StreamClient) clearEntryCHannel() {
-	select {
-	case <-c.entryChan:
-		close(c.entryChan)
+	defer func() {
 		for range c.entryChan {
 		}
-	default:
-	}
+	}()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Warn("[datastream_client] Channel is already closed")
+		}
+	}()
+
+	close(c.entryChan)
 }
 
 // close old entry chan and read all elements before opening a new one
-func (c *StreamClient) renewEntryChannel() {
+func (c *StreamClient) RenewEntryChannel() {
 	c.clearEntryCHannel()
 	c.entryChan = make(chan interface{}, entryChannelSize)
 }
@@ -347,7 +349,7 @@ func (c *StreamClient) EnsureConnected() (bool, error) {
 			return false, fmt.Errorf("failed to reconnect the datastream client: %w", err)
 		}
 
-		c.renewEntryChannel()
+		c.RenewEntryChannel()
 	}
 
 	return true, nil
@@ -357,6 +359,7 @@ func (c *StreamClient) EnsureConnected() (bool, error) {
 // at end will wait for new entries to arrive
 func (c *StreamClient) ReadAllEntriesToChannel() error {
 	c.streaming.Store(true)
+	c.stopReadingToChannel.Store(false)
 	defer c.streaming.Store(false)
 
 	var bookmark *types.BookmarkProto
@@ -432,6 +435,10 @@ LOOP:
 		default:
 		case <-c.ctx.Done():
 			log.Warn("[Datastream client] Context done - stopping")
+			break LOOP
+		}
+
+		if c.stopReadingToChannel.Load() {
 			break LOOP
 		}
 

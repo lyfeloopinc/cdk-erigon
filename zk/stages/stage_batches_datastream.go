@@ -24,9 +24,12 @@ func NewDatastreamClientRunner(dsClient DatastreamClient, logPrefix string) *Dat
 }
 
 func (r *DatastreamClientRunner) StartRead() error {
+	r.dsClient.RenewEntryChannel()
 	if r.isReading.Load() {
 		return fmt.Errorf("tried starting datastream client runner thread while another is running")
 	}
+
+	r.stopRunner.Store(false)
 
 	go func() {
 		routineId := rand.Intn(1000000)
@@ -66,9 +69,16 @@ func (r *DatastreamClientRunner) StartRead() error {
 
 func (r *DatastreamClientRunner) StopRead() {
 	r.stopRunner.Store(true)
+	r.dsClient.StopReadingToChannel()
+	//wait for the read to stop, otherwise panic occurs
+	for r.dsClient.GetStreamingAtomic().Load() {
+	}
+	r.dsClient.Stop()
 }
 
 func (r *DatastreamClientRunner) RestartReadFromBlock(fromBlock uint64) error {
+	log.Info(fmt.Sprintf("[%s] Stopping datastream", r.logPrefix))
+
 	r.StopRead()
 
 	//wait for the old routine to be finished before continuing

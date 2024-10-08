@@ -58,7 +58,9 @@ type HermezDb interface {
 }
 
 type DatastreamClient interface {
+	RenewEntryChannel()
 	ReadAllEntriesToChannel() error
+	StopReadingToChannel()
 	GetEntryChan() *chan interface{}
 	GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, int, error)
 	GetLatestL2Block() (*types.FullL2Block, error)
@@ -207,7 +209,7 @@ func SpawnStageBatches(
 
 	log.Info(fmt.Sprintf("[%s] Reading blocks from the datastream.", logPrefix))
 
-	unwindFn := func(unwindBlock uint64) error {
+	unwindFn := func(unwindBlock uint64) (uint64, error) {
 		return rollback(logPrefix, eriDb, hermezDb, dsQueryClient, unwindBlock, tx, u)
 	}
 
@@ -223,7 +225,7 @@ func SpawnStageBatches(
 
 	entryChan := cfg.dsClient.GetEntryChan()
 
-	prevAmountBlocksWritten, restartDatastreamBlock := uint64(0), uint64(0)
+	prevAmountBlocksWritten := uint64(0)
 	endLoop := false
 
 	for {
@@ -234,14 +236,10 @@ func SpawnStageBatches(
 		// if both download routine stopped and channel empty - stop loop
 		select {
 		case entry := <-*entryChan:
-			if restartDatastreamBlock, endLoop, err = batchProcessor.ProcessEntry(entry); err != nil {
+			if endLoop, err = batchProcessor.ProcessEntry(entry); err != nil {
 				return err
 			}
 			dsClientProgress.Store(batchProcessor.LastBlockHeight())
-
-			if restartDatastreamBlock > 0 {
-				dsClientRunner.RestartReadFromBlock(restartDatastreamBlock)
-			}
 		case <-ctx.Done():
 			log.Warn(fmt.Sprintf("[%s] Context done", logPrefix))
 			endLoop = true
@@ -594,24 +592,24 @@ func PruneBatchesStage(s *stagedsync.PruneState, tx kv.RwTx, cfg BatchesCfg, ctx
 // 2. resolves the unwind block (as the latest block in the previous batch, comparing to the found ancestor block)
 // 3. triggers the unwinding
 func rollback(logPrefix string, eriDb *erigon_db.ErigonDb, hermezDb *hermez_db.HermezDb,
-	dsQueryClient DatastreamClient, latestDSBlockNum uint64, tx kv.RwTx, u stagedsync.Unwinder) error {
+	dsQueryClient DatastreamClient, latestDSBlockNum uint64, tx kv.RwTx, u stagedsync.Unwinder) (uint64, error) {
 	ancestorBlockNum, ancestorBlockHash, err := findCommonAncestor(eriDb, hermezDb, dsQueryClient, latestDSBlockNum)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	log.Debug(fmt.Sprintf("[%s] The common ancestor for datastream and db is block %d (%s)", logPrefix, ancestorBlockNum, ancestorBlockHash))
 
 	unwindBlockNum, unwindBlockHash, batchNum, err := getUnwindPoint(eriDb, hermezDb, ancestorBlockNum, ancestorBlockHash)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	if err = stages.SaveStageProgress(tx, stages.HighestSeenBatchNumber, batchNum-1); err != nil {
-		return err
+		return 0, err
 	}
 	log.Warn(fmt.Sprintf("[%s] Unwinding to block %d (%s)", logPrefix, unwindBlockNum, unwindBlockHash))
 	u.UnwindTo(unwindBlockNum, unwindBlockHash)
-	return nil
+	return unwindBlockNum, nil
 }
 
 // findCommonAncestor searches the latest common ancestor block number and hash between the data stream and the local db.

@@ -19,6 +19,11 @@ import (
 	"github.com/ledgerwatch/log/v3"
 )
 
+var (
+	ErrorTriggeredUnwind = errors.New("triggered unwind")
+	ErrorSkippedBlock    = errors.New("skipped block")
+)
+
 type ProcessorErigonDb interface {
 	WriteHeader(batchNo *big.Int, blockHash common.Hash, stateRoot, txHash, parentHash common.Hash, coinbase common.Address, ts, gasLimit uint64) (*ethTypes.Header, error)
 	WriteBody(batchNo *big.Int, headerHash common.Hash, txs []ethTypes.Transaction) error
@@ -32,6 +37,7 @@ type ProcessorHermezDb interface {
 	WriteEffectiveGasPricePercentage(txHash common.Hash, effectiveGasPricePercentage uint8) error
 
 	WriteStateRoot(l2BlockNumber uint64, rpcRoot common.Hash) error
+	GetStateRoot(l2BlockNumber uint64) (common.Hash, error)
 
 	CheckGlobalExitRootWritten(ger common.Hash) (bool, error)
 	WriteBlockGlobalExitRoot(l2BlockNo uint64, ger common.Hash) error
@@ -64,18 +70,19 @@ type BatchesProcessor struct {
 	debugStepAfter,
 	debugStep,
 	stageProgressBlockNo,
-	lastForkId,
 	highestHashableL2BlockNo,
-	lastBlockHeight,
+	lastForkId uint64
+	highestL1InfoTreeIndex uint32
+	dsQueryClient          DsQueryClient
+	progressChan           chan uint64
+	unwindFn               func(uint64) (uint64, error)
+
 	highestSeenBatchNo,
+	lastBlockHeight,
 	blocksWritten,
 	highestVerifiedBatch uint64
-	highestL1InfoTreeIndex uint32
 	lastBlockRoot,
 	lastBlockHash common.Hash
-	dsQueryClient DsQueryClient
-	progressChan  chan uint64
-	unwindFn      func(uint64) error
 }
 
 func NewBatchesProcessor(
@@ -87,7 +94,7 @@ func NewBatchesProcessor(
 	syncBlockLimit, debugBlockLimit, debugStepAfter, debugStep, stageProgressBlockNo, stageProgressBatchNo uint64,
 	dsQueryClient DsQueryClient,
 	progressChan chan uint64,
-	unwindFn func(uint64) error,
+	unwindFn func(uint64) (uint64, error),
 ) (*BatchesProcessor, error) {
 	highestVerifiedBatch, err := stages.GetStageProgress(tx, stages.L1VerificationsBatchNo)
 	if err != nil {
@@ -122,18 +129,20 @@ func NewBatchesProcessor(
 	}, nil
 }
 
-func (p *BatchesProcessor) ProcessEntry(entry interface{}) (rollbackBlock uint64, endLoop bool, err error) {
+func (p *BatchesProcessor) ProcessEntry(entry interface{}) (endLoop bool, err error) {
 	switch entry := entry.(type) {
 	case *types.BatchStart:
-		return 0, false, p.processBatchStartEntry(entry)
+		return false, p.processBatchStartEntry(entry)
 	case *types.BatchEnd:
-		return 0, false, p.processBatchEndEntry(entry)
+		return false, p.processBatchEndEntry(entry)
 	case *types.FullL2Block:
 		return p.processFullBlock(entry)
 	case *types.GerUpdate:
-		return 0, false, p.processGerUpdate(entry)
+		return false, p.processGerUpdate(entry)
+	case nil:
+		return false, nil
 	default:
-		return 0, false, fmt.Errorf("unknown entry type: %T", entry)
+		return false, fmt.Errorf("unknown entry type: %T", entry)
 	}
 }
 
@@ -179,12 +188,21 @@ func (p *BatchesProcessor) processBatchStartEntry(batchStart *types.BatchStart) 
 	return nil
 }
 
-func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (restartStreamFromBlock uint64, endLoop bool, err error) {
+func (p *BatchesProcessor) unwind(blockNum uint64) (uint64, error) {
+	unwindBlock, err := p.unwindFn(blockNum)
+	if err != nil {
+		return 0, err
+	}
+
+	return unwindBlock, nil
+}
+
+func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (endLoop bool, err error) {
 	log.Debug(fmt.Sprintf("[%s] Retrieved %d (%s) block from stream", p.logPrefix, blockEntry.L2BlockNumber, blockEntry.L2Blockhash.String()))
 	if p.syncBlockLimit > 0 && blockEntry.L2BlockNumber >= p.syncBlockLimit {
 		// stop the node going into a crazy loop
 		time.Sleep(2 * time.Second)
-		return 0, true, nil
+		return true, nil
 	}
 
 	// handle batch boundary changes - we do this here instead of reading the batch start channel because
@@ -196,18 +214,18 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (rest
 			panic(message)
 		}
 		if err = stages.SaveStageProgress(p.tx, stages.ForkId, blockEntry.ForkId); err != nil {
-			return 0, false, fmt.Errorf("save stage progress error: %v", err)
+			return false, fmt.Errorf("save stage progress error: %v", err)
 		}
 		p.lastForkId = blockEntry.ForkId
 		if err = p.hermezDb.WriteForkId(blockEntry.BatchNumber, blockEntry.ForkId); err != nil {
-			return 0, false, fmt.Errorf("write fork id error: %v", err)
+			return false, fmt.Errorf("write fork id error: %v", err)
 		}
 		// NOTE (RPC): avoided use of 'writeForkIdBlockOnce' by reading instead batch by forkId, and then lowest block number in batch
 	}
 
 	// ignore genesis or a repeat of the last block
 	if blockEntry.L2BlockNumber == 0 {
-		return 0, false, nil
+		return false, nil
 	}
 	// skip but warn on already processed blocks
 	if blockEntry.L2BlockNumber <= p.stageProgressBlockNo {
@@ -219,25 +237,27 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (rest
 
 		dbBatchNum, err := p.hermezDb.GetBatchNoByL2Block(blockEntry.L2BlockNumber)
 		if err != nil {
-			return 0, false, err
+			return false, err
 		}
 
 		if blockEntry.BatchNumber > dbBatchNum {
 			// if the batch number is higher than the one we know about, it means that we need to trigger an unwinding of blocks
 			log.Warn(fmt.Sprintf("[%s] Batch number mismatch detected. Triggering unwind...", p.logPrefix),
 				"block", blockEntry.L2BlockNumber, "ds batch", blockEntry.BatchNumber, "db batch", dbBatchNum)
-			if err := p.unwindFn(blockEntry.L2BlockNumber); err != nil {
-				return blockEntry.L2BlockNumber, false, err
+			if _, err := p.unwind(blockEntry.L2BlockNumber); err != nil {
+				return false, err
 			}
+
+			return false, ErrorTriggeredUnwind
 		}
-		return 0, false, nil
+		return false, nil
 	}
 
 	var dbParentBlockHash common.Hash
 	if blockEntry.L2BlockNumber > 1 {
 		dbParentBlockHash, err = p.eriDb.ReadCanonicalHash(p.lastBlockHeight)
 		if err != nil {
-			return 0, false, fmt.Errorf("failed to retrieve parent block hash for datastream block %d: %w",
+			return false, fmt.Errorf("failed to retrieve parent block hash for datastream block %d: %w",
 				blockEntry.L2BlockNumber, err)
 		}
 	}
@@ -247,7 +267,7 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (rest
 	if dsParentBlockHash == emptyHash {
 		parentBlockDS, _, err := p.dsQueryClient.GetL2BlockByNumber(blockEntry.L2BlockNumber - 1)
 		if err != nil {
-			return 0, false, err
+			return false, err
 		}
 
 		if parentBlockDS != nil {
@@ -267,20 +287,25 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (rest
 			"ds parent block number", blockEntry.L2BlockNumber-1,
 		)
 		//parent blockhash is wrong, so unwind to it, then restat stream from it to get the correct one
-		p.unwindFn(blockEntry.L2BlockNumber - 1)
-		return blockEntry.L2BlockNumber - 1, false, nil
+		if _, err := p.unwind(blockEntry.L2BlockNumber - 1); err != nil {
+			return false, err
+		}
+		return false, ErrorTriggeredUnwind
 	}
 
-	// skip if we already have this block
+	// unwind if we already have this block
 	if blockEntry.L2BlockNumber < p.lastBlockHeight+1 {
-		log.Warn(fmt.Sprintf("[%s] Skipping block %d, already processed unwinding...", p.logPrefix, blockEntry.L2BlockNumber))
-		p.unwindFn(blockEntry.L2BlockNumber)
+		log.Warn(fmt.Sprintf("[%s] Block %d, already processed unwinding...", p.logPrefix, blockEntry.L2BlockNumber))
+		if _, err := p.unwind(blockEntry.L2BlockNumber); err != nil {
+			return false, err
+		}
+
+		return false, ErrorTriggeredUnwind
 	}
 
 	// check for sequential block numbers
 	if blockEntry.L2BlockNumber > p.lastBlockHeight+1 {
-		log.Warn(fmt.Sprintf("[%s] Stream skipped ahead, restarting datastream to block %d", p.logPrefix, blockEntry.L2BlockNumber))
-		return p.lastBlockHeight + 1, false, nil
+		return false, ErrorSkippedBlock
 	}
 
 	// batch boundary - record the highest hashable block number (last block in last full batch)
@@ -316,13 +341,13 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (rest
 		// first block in the loop so read the parent hash
 		previousHash, err := p.eriDb.ReadCanonicalHash(blockEntry.L2BlockNumber - 1)
 		if err != nil {
-			return 0, false, fmt.Errorf("failed to get genesis header: %v", err)
+			return false, fmt.Errorf("failed to get genesis header: %v", err)
 		}
 		blockEntry.ParentHash = previousHash
 	}
 
 	if err := p.writeL2Block(blockEntry); err != nil {
-		return 0, false, fmt.Errorf("writeL2Block error: %v", err)
+		return false, fmt.Errorf("writeL2Block error: %v", err)
 	}
 
 	p.dsQueryClient.GetProgressAtomic().Store(blockEntry.L2BlockNumber)
@@ -342,7 +367,7 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (rest
 	if p.debugBlockLimit == 0 {
 		endLoop = false
 	}
-	return 0, endLoop, nil
+	return endLoop, nil
 }
 
 // writeL2Block writes L2Block to ErigonDb and HermezDb
