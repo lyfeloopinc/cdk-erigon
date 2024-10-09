@@ -128,8 +128,24 @@ func SpawnSequencingStage(
 			return nil
 		}
 
-		if handled, err := doCheckForBadBatch(batchContext, batchState, executionAt); err != nil || handled {
-			return err
+		bad := false
+		for _, batch := range cfg.zk.BadBatches {
+			if batch == batchState.batchNumber {
+				bad = true
+				break
+			}
+		}
+
+		// if we aren't forcing a bad batch then check it
+		if !bad {
+			bad, err = doCheckForBadBatch(batchContext, batchState, executionAt)
+			if err != nil {
+				return err
+			}
+		}
+
+		if bad {
+			return writeBadBatchDetails(batchContext, batchState, executionAt)
 		}
 	}
 
