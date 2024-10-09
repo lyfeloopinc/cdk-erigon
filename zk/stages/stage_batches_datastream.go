@@ -53,12 +53,14 @@ func (r *DatastreamClientRunner) StartRead() error {
 
 			if err := r.connectDatastream(); err != nil {
 				log.Error(fmt.Sprintf("[%s] Error connecting to datastream", r.logPrefix), "error", err)
+				time.Sleep(10 * time.Millisecond)
+				continue
 			}
 
 			if err := r.dsClient.ReadAllEntriesToChannel(); err != nil {
 				log.Error(fmt.Sprintf("[%s] Error downloading blocks from datastream", r.logPrefix), "error", err)
+				time.Sleep(10 * time.Millisecond)
 			}
-
 		}
 	}()
 
