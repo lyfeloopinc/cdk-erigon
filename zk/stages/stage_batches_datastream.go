@@ -46,21 +46,19 @@ func (r *DatastreamClientRunner) StartRead() error {
 				break
 			}
 
-			// start routine to download blocks and push them in a channel
-			if !r.dsClient.GetStreamingAtomic().Load() {
-				log.Info(fmt.Sprintf("[%s] Starting stream", r.logPrefix))
-				// this will download all blocks from datastream and push them in a channel
-				// if no error, break, else continue trying to get them
-				// Create bookmark
+			log.Info(fmt.Sprintf("[%s] Starting stream", r.logPrefix))
+			// this will download all blocks from datastream and push them in a channel
+			// if no error, break, else continue trying to get them
+			// Create bookmark
 
-				if err := r.connectDatastream(); err != nil {
-					log.Error(fmt.Sprintf("[%s] Error connecting to datastream", r.logPrefix), "error", err)
-				}
-
-				if err := r.dsClient.ReadAllEntriesToChannel(); err != nil {
-					log.Error(fmt.Sprintf("[%s] Error downloading blocks from datastream", r.logPrefix), "error", err)
-				}
+			if err := r.connectDatastream(); err != nil {
+				log.Error(fmt.Sprintf("[%s] Error connecting to datastream", r.logPrefix), "error", err)
 			}
+
+			if err := r.dsClient.ReadAllEntriesToChannel(); err != nil {
+				log.Error(fmt.Sprintf("[%s] Error downloading blocks from datastream", r.logPrefix), "error", err)
+			}
+
 		}
 	}()
 
