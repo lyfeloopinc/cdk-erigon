@@ -85,11 +85,8 @@ type BatchesProcessor struct {
 	highestVerifiedBatch uint64
 	lastBlockRoot,
 	lastBlockHash common.Hash
-	dsQueryClient DsQueryClient
-	progressChan  chan uint64
-	unwindFn      func(uint64) error
-	chainConfig   *chain.Config
-	miningConfig  *params.MiningConfig
+	chainConfig  *chain.Config
+	miningConfig *params.MiningConfig
 }
 
 func NewBatchesProcessor(
@@ -103,7 +100,7 @@ func NewBatchesProcessor(
 	progressChan chan uint64,
 	chainConfig *chain.Config,
 	miningConfig *params.MiningConfig,
-	unwindFn func(uint64) error,
+	unwindFn func(uint64) (uint64, error),
 ) (*BatchesProcessor, error) {
 	highestVerifiedBatch, err := stages.GetStageProgress(tx, stages.L1VerificationsBatchNo)
 	if err != nil {
