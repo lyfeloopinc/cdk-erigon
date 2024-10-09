@@ -429,6 +429,8 @@ func (c *StreamClient) afterStartCommand() (*types.ResultEntry, error) {
 func (c *StreamClient) readAllFullL2BlocksToChannel() error {
 	var err error
 
+	readNewProto := true
+	parsedProto := interface{}(nil)
 LOOP:
 	for {
 		select {
@@ -446,30 +448,34 @@ LOOP:
 			c.conn.SetReadDeadline(time.Now().Add(c.checkTimeout))
 		}
 
-		parsedProto, localErr := ReadParsedProto(c)
-		if localErr != nil {
-			err = localErr
-			break
+		if readNewProto {
+			if parsedProto, err = ReadParsedProto(c); err != nil {
+				break
+			}
+			readNewProto = false
 		}
 		c.lastWrittenTime.Store(time.Now().UnixNano())
 
 		switch parsedProto := parsedProto.(type) {
 		case *types.BookmarkProto:
+			readNewProto = true
 			continue
 		case *types.BatchStart:
 			c.currentFork = parsedProto.ForkId
-			c.entryChan <- parsedProto
 		case *types.GerUpdate:
-			c.entryChan <- parsedProto
 		case *types.BatchEnd:
-			c.entryChan <- parsedProto
 		case *types.FullL2Block:
 			parsedProto.ForkId = c.currentFork
 			log.Trace("writing block to channel", "blockNumber", parsedProto.L2BlockNumber, "batchNumber", parsedProto.BatchNumber)
-			c.entryChan <- parsedProto
 		default:
 			err = fmt.Errorf("unexpected entry type: %v", parsedProto)
 			break LOOP
+		}
+		select {
+		case c.entryChan <- parsedProto:
+			readNewProto = true
+		default:
+			time.Sleep(1 * time.Millisecond)
 		}
 	}
 

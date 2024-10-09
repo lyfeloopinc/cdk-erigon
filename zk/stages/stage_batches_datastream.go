@@ -72,6 +72,7 @@ func (r *DatastreamClientRunner) StopRead() {
 	r.dsClient.StopReadingToChannel()
 	//wait for the read to stop, otherwise panic occurs
 	for r.dsClient.GetStreamingAtomic().Load() {
+		time.Sleep(10 * time.Microsecond)
 	}
 	r.dsClient.Stop()
 }
