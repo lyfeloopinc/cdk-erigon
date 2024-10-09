@@ -74,7 +74,6 @@ func (r *DatastreamClientRunner) StopRead() {
 	for r.dsClient.GetStreamingAtomic().Load() {
 		time.Sleep(10 * time.Microsecond)
 	}
-	r.dsClient.Stop()
 }
 
 func (r *DatastreamClientRunner) RestartReadFromBlock(fromBlock uint64) error {

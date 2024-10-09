@@ -219,7 +219,12 @@ func SpawnStageBatches(
 		return rollback(logPrefix, eriDb, hermezDb, dsQueryClient, unwindBlock, tx, u)
 	}
 
-	batchProcessor, err := NewBatchesProcessor(ctx, logPrefix, tx, hermezDb, eriDb, cfg.zkCfg.SyncLimit, cfg.zkCfg.DebugLimit, cfg.zkCfg.DebugStepAfter, cfg.zkCfg.DebugStep, stageProgressBlockNo, stageProgressBatchNo, dsQueryClient, progressChan, cfg.chainConfig, cfg.miningConfig, unwindFn)
+	lastProcessedBlockHash, err := eriDb.ReadCanonicalHash(stageProgressBlockNo)
+	if err != nil {
+		return fmt.Errorf("failed to read canonical hash for block %d: %w", stageProgressBlockNo, err)
+	}
+
+	batchProcessor, err := NewBatchesProcessor(ctx, logPrefix, tx, hermezDb, eriDb, cfg.zkCfg.SyncLimit, cfg.zkCfg.DebugLimit, cfg.zkCfg.DebugStepAfter, cfg.zkCfg.DebugStep, stageProgressBlockNo, stageProgressBatchNo, lastProcessedBlockHash, dsQueryClient, progressChan, cfg.chainConfig, cfg.miningConfig, unwindFn)
 	if err != nil {
 		return err
 	}

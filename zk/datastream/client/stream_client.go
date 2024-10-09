@@ -101,7 +101,6 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 	if _, err := c.EnsureConnected(); err != nil {
 		return nil, -1, err
 	}
-	defer c.Stop()
 
 	var (
 		l2Block   *types.FullL2Block
@@ -160,7 +159,6 @@ func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error
 	if _, err := c.EnsureConnected(); err != nil {
 		return nil, err
 	}
-	defer c.Stop()
 
 	h, err := c.GetHeader()
 	if err != nil {

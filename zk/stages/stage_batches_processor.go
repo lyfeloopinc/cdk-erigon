@@ -96,6 +96,7 @@ func NewBatchesProcessor(
 	hermezDb ProcessorHermezDb,
 	eriDb ProcessorErigonDb,
 	syncBlockLimit, debugBlockLimit, debugStepAfter, debugStep, stageProgressBlockNo, stageProgressBatchNo uint64,
+	lastProcessedBlockHash common.Hash,
 	dsQueryClient DsQueryClient,
 	progressChan chan uint64,
 	chainConfig *chain.Config,
@@ -128,7 +129,7 @@ func NewBatchesProcessor(
 		highestVerifiedBatch: highestVerifiedBatch,
 		dsQueryClient:        dsQueryClient,
 		progressChan:         progressChan,
-		lastBlockHash:        emptyHash,
+		lastBlockHash:        lastProcessedBlockHash,
 		lastBlockRoot:        emptyHash,
 		lastForkId:           lastForkId,
 		unwindFn:             unwindFn,
@@ -270,28 +271,12 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (endL
 		}
 	}
 
-	dsParentBlockHash := p.lastBlockHash
-	dsBlockNumber := p.lastBlockHeight
-	if dsParentBlockHash == emptyHash {
-		parentBlockDS, _, err := p.dsQueryClient.GetL2BlockByNumber(blockEntry.L2BlockNumber - 1)
-		if err != nil {
-			return false, err
-		}
-
-		if parentBlockDS != nil {
-			dsParentBlockHash = parentBlockDS.L2Blockhash
-			if parentBlockDS.L2BlockNumber > 0 {
-				dsBlockNumber = parentBlockDS.L2BlockNumber
-			}
-		}
-	}
-
-	if blockEntry.L2BlockNumber > 1 && dbParentBlockHash != dsParentBlockHash {
+	if p.lastBlockHeight > 0 && dbParentBlockHash != p.lastBlockHash {
 		// unwind/rollback blocks until the latest common ancestor block
 		log.Warn(fmt.Sprintf("[%s] Parent block hashes mismatch on block %d. Triggering unwind...", p.logPrefix, blockEntry.L2BlockNumber),
 			"db parent block hash", dbParentBlockHash,
-			"ds parent block number", dsBlockNumber,
-			"ds parent block hash", dsParentBlockHash,
+			"ds parent block number", p.lastBlockHeight,
+			"ds parent block hash", p.lastBlockHash,
 			"ds parent block number", blockEntry.L2BlockNumber-1,
 		)
 		//parent blockhash is wrong, so unwind to it, then restat stream from it to get the correct one
