@@ -46,6 +46,12 @@ func (c *TestDatastreamClient) ReadAllEntriesToChannel() error {
 	return nil
 }
 
+func (c *TestDatastreamClient) RenewEntryChannel() {
+}
+
+func (c *TestDatastreamClient) StopReadingToChannel() {
+}
+
 func (c *TestDatastreamClient) GetEntryChan() *chan interface{} {
 	return &c.entriesChan
 }
