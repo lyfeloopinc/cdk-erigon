@@ -13,7 +13,7 @@ replace github.com/ledgerwatch/erigon-lib => ./erigon-lib
 
 require (
 	gfx.cafe/util/go/generic v0.0.0-20230721185457-c559e86c829c
-	github.com/0xPolygonHermez/zkevm-data-streamer v0.2.5
+	github.com/0xPolygonHermez/zkevm-data-streamer v0.2.6
 	github.com/99designs/gqlgen v0.17.40
 	github.com/Giulio2002/bls v0.0.0-20240315151443-652e18a3d188
 	github.com/Masterminds/sprig/v3 v3.2.3
@@ -174,6 +174,7 @@ require (
 	github.com/francoispqt/gojay v1.2.13 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/garslo/gogen v0.0.0-20170307003452-d6ebae628c7c // indirect
+	github.com/go-delve/delve v1.21.2 // indirect
 	github.com/go-llsqlite/adapter v0.0.0-20230927005056-7f5ce7f0c916 // indirect
 	github.com/go-llsqlite/crawshaw v0.4.0 // indirect
 	github.com/go-logr/logr v1.2.4 // indirect

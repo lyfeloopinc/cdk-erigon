@@ -1,10 +1,12 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"reflect"
 	"sync/atomic"
@@ -43,6 +45,8 @@ type StreamClient struct {
 	conn         net.Conn
 	id           string        // Client id
 	checkTimeout time.Duration // time to wait for data before reporting an error
+
+	header *types.HeaderEntry
 
 	// atomic
 	lastWrittenTime      atomic.Int64
@@ -94,11 +98,15 @@ func (c *StreamClient) GetEntryChan() *chan interface{} {
 	return &c.entryChan
 }
 
+func (c *StreamClient) GetEntryNumberLimit() uint64 {
+	return c.header.TotalEntries
+}
+
 // GetL2BlockByNumber queries the data stream by sending the L2 block start bookmark for the certain block number
 // and streams the changes for that block (including the transactions).
 // Note that this function is intended for on demand querying and it disposes the connection after it ends.
 func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, int, error) {
-	if _, err := c.EnsureConnected(); err != nil {
+	if err := c.EnsureConnected(); err != nil {
 		return nil, -1, err
 	}
 
@@ -134,7 +142,7 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 		default:
 		}
 
-		parsedEntry, err := ReadParsedProto(c)
+		parsedEntry, _, err := ReadParsedProto(c)
 		if err != nil {
 			return nil, -1, err
 		}
@@ -156,13 +164,13 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (*types.FullL2Block, 
 // it retrieves the latest File entry that is of EntryTypeL2Block type.
 // Note that this function is intended for on demand querying and it disposes the connection after it ends.
 func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error) {
-	if _, err := c.EnsureConnected(); err != nil {
-		return nil, err
+	if err := c.EnsureConnected(); err != nil {
+		return nil, fmt.Errorf("failed to ensure connect: %w", err)
 	}
 
 	h, err := c.GetHeader()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get header: %w", err)
 	}
 
 	latestEntryNum := h.TotalEntries - 1
@@ -187,7 +195,7 @@ func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error
 	}
 
 	if latestEntryNum == 0 {
-		return nil, errors.New("failed to retrieve the latest block from the data stream")
+		return nil, errors.New("no block found")
 	}
 
 	return l2Block, nil
@@ -261,6 +269,8 @@ func (c *StreamClient) GetHeader() (*types.HeaderEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s read header entry error: %v", c.id, err)
 	}
+
+	c.header = h
 
 	return h, nil
 }
@@ -341,16 +351,32 @@ func (c *StreamClient) RenewEntryChannel() {
 	c.entryChan = make(chan interface{}, entryChannelSize)
 }
 
-func (c *StreamClient) EnsureConnected() (bool, error) {
+func (c *StreamClient) connClosed() bool {
 	if c.conn == nil {
+		return true
+	}
+
+	c.conn.SetReadDeadline(time.Now())
+	one := new(bytes.Buffer)
+	if _, err := io.CopyN(one, c.conn, 1); err == io.ErrClosedPipe {
+		c.conn = nil
+		return true
+	}
+
+	c.conn.SetReadDeadline(time.Now().Add(1 * c.checkTimeout))
+	return false
+}
+
+func (c *StreamClient) EnsureConnected() error {
+	if c.connClosed() {
 		if err := c.tryReConnect(); err != nil {
-			return false, fmt.Errorf("failed to reconnect the datastream client: %w", err)
+			return fmt.Errorf("failed to reconnect the datastream client: %w", err)
 		}
 
 		c.RenewEntryChannel()
 	}
 
-	return true, nil
+	return nil
 }
 
 // reads entries to the end of the stream
@@ -365,7 +391,7 @@ func (c *StreamClient) ReadAllEntriesToChannel() error {
 	if progress == 0 {
 		bookmark = types.NewBookmarkProto(0, datastream.BookmarkType_BOOKMARK_TYPE_BATCH)
 	} else {
-		bookmark = types.NewBookmarkProto(progress, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
+		bookmark = types.NewBookmarkProto(progress+1, datastream.BookmarkType_BOOKMARK_TYPE_L2_BLOCK)
 	}
 
 	protoBookmark, err := bookmark.Marshal()
@@ -424,10 +450,9 @@ func (c *StreamClient) afterStartCommand() (*types.ResultEntry, error) {
 
 // reads all entries from the server and sends them to a channel
 // sends the parsed FullL2Blocks with transactions to a channel
-func (c *StreamClient) readAllFullL2BlocksToChannel() error {
-	var err error
-
+func (c *StreamClient) readAllFullL2BlocksToChannel() (err error) {
 	readNewProto := true
+	entryNum := uint64(0)
 	parsedProto := interface{}(nil)
 LOOP:
 	for {
@@ -447,8 +472,8 @@ LOOP:
 		}
 
 		if readNewProto {
-			if parsedProto, err = ReadParsedProto(c); err != nil {
-				break
+			if parsedProto, entryNum, err = ReadParsedProto(c); err != nil {
+				return err
 			}
 			readNewProto = false
 		}
@@ -466,18 +491,22 @@ LOOP:
 			parsedProto.ForkId = c.currentFork
 			log.Trace("writing block to channel", "blockNumber", parsedProto.L2BlockNumber, "batchNumber", parsedProto.BatchNumber)
 		default:
-			err = fmt.Errorf("unexpected entry type: %v", parsedProto)
-			break LOOP
+			return fmt.Errorf("unexpected entry type: %v", parsedProto)
 		}
 		select {
 		case c.entryChan <- parsedProto:
 			readNewProto = true
 		default:
-			time.Sleep(1 * time.Millisecond)
+			time.Sleep(10 * time.Microsecond)
+		}
+
+		if c.header.TotalEntries == entryNum+1 {
+			log.Trace("reached the end of the stream", "header_totalEntries", c.header.TotalEntries, "entryNum", entryNum)
+			break LOOP
 		}
 	}
 
-	return err
+	return nil
 }
 
 func (c *StreamClient) tryReConnect() error {
@@ -507,10 +536,12 @@ func (c *StreamClient) StopReadingToChannel() {
 
 type FileEntryIterator interface {
 	NextFileEntry() (*types.FileEntry, error)
+	GetEntryNumberLimit() uint64
 }
 
 func ReadParsedProto(iterator FileEntryIterator) (
 	parsedEntry interface{},
+	entryNum uint64,
 	err error,
 ) {
 	file, err := iterator.NextFileEntry()
@@ -520,8 +551,9 @@ func ReadParsedProto(iterator FileEntryIterator) (
 	}
 
 	if file == nil {
-		return nil, nil
+		return
 	}
+	entryNum = file.EntryNum
 
 	switch file.EntryType {
 	case types.BookmarkEntryType:
@@ -547,7 +579,7 @@ func ReadParsedProto(iterator FileEntryIterator) (
 			if innerFile, err = iterator.NextFileEntry(); err != nil {
 				return
 			}
-
+			entryNum = innerFile.EntryNum
 			if innerFile.IsL2Tx() {
 				if l2Tx, err = types.UnmarshalTx(innerFile.Data); err != nil {
 					return
@@ -583,6 +615,9 @@ func ReadParsedProto(iterator FileEntryIterator) (
 				err = fmt.Errorf("unexpected entry type inside a block: %d", innerFile.EntryType)
 				return
 			}
+			if entryNum == iterator.GetEntryNumberLimit() {
+				break LOOP
+			}
 		}
 
 		l2Block.L2Txs = txs
@@ -596,6 +631,7 @@ func ReadParsedProto(iterator FileEntryIterator) (
 	default:
 		err = fmt.Errorf("unexpected entry type: %d", file.EntryType)
 	}
+
 	return
 }
 

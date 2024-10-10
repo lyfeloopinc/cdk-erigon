@@ -253,7 +253,7 @@ func TestStreamClientReadParsedProto(t *testing.T) {
 		close(errCh)
 	}()
 
-	parsedEntry, err := ReadParsedProto(c)
+	parsedEntry, entryNum, err := ReadParsedProto(c)
 	require.NoError(t, err)
 	serverErr := <-errCh
 	require.NoError(t, serverErr)
@@ -261,6 +261,7 @@ func TestStreamClientReadParsedProto(t *testing.T) {
 	expectedL2Block := types.ConvertToFullL2Block(l2Block)
 	expectedL2Block.L2Txs = append(expectedL2Block.L2Txs, *expectedL2Tx)
 	require.Equal(t, expectedL2Block, parsedEntry)
+	require.Equal(t, uint64(3), entryNum)
 }
 
 func TestStreamClientGetLatestL2Block(t *testing.T) {

@@ -68,7 +68,7 @@ type DatastreamClient interface {
 	GetLatestL2Block() (*types.FullL2Block, error)
 	GetStreamingAtomic() *atomic.Bool
 	GetProgressAtomic() *atomic.Uint64
-	EnsureConnected() (bool, error)
+	EnsureConnected() error
 	Start() error
 	Stop()
 }
@@ -76,7 +76,6 @@ type DatastreamClient interface {
 type DatastreamReadRunner interface {
 	StartRead()
 	StopRead()
-	RestartReadFromBlock(fromBlock uint64)
 }
 
 type dsClientCreatorHandler func(context.Context, *ethconfig.Zk, uint64) (DatastreamClient, error)
@@ -178,10 +177,26 @@ func SpawnStageBatches(
 		return err
 	}
 	defer dsQueryClient.Stop()
+	var highestDSL2Block *types.FullL2Block
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		highestDSL2Block, err = dsQueryClient.GetLatestL2Block()
+		if err != nil {
+			return fmt.Errorf("failed to retrieve the latest datastream l2 block: %w", err)
+		}
 
-	highestDSL2Block, err := dsQueryClient.GetLatestL2Block()
-	if err != nil {
-		return fmt.Errorf("failed to retrieve the latest datastream l2 block: %w", err)
+		// a lower block should also break the loop because that means the datastream was unwound
+		// thus we should unwind as well and continue from there
+		if highestDSL2Block.L2BlockNumber != stageProgressBlockNo {
+			break
+		}
+
+		log.Info(fmt.Sprintf("[%s] Waiting for at least one new block in datastream", logPrefix), "datastreamBlock", highestDSL2Block.L2BlockNumber, "last processed block", stageProgressBlockNo)
+		time.Sleep(1 * time.Second)
 	}
 
 	if highestDSL2Block.L2BlockNumber < stageProgressBlockNo {
@@ -190,8 +205,8 @@ func SpawnStageBatches(
 
 	log.Debug(fmt.Sprintf("[%s] Highest block in db and datastream", logPrefix), "datastreamBlock", highestDSL2Block.L2BlockNumber, "dbBlock", stageProgressBlockNo)
 
-	dsClientProgress := cfg.dsClient.GetProgressAtomic()
-	dsClientProgress.Store(stageProgressBlockNo)
+	dsClientProgress := dsQueryClient.GetProgressAtomic()
+	dsClientProgress.Swap(stageProgressBlockNo)
 
 	// start a routine to print blocks written progress
 	progressChan, stopProgressPrinter := zk.ProgressPrinterWithoutTotal(fmt.Sprintf("[%s] Downloaded blocks from datastream progress", logPrefix))
@@ -230,11 +245,11 @@ func SpawnStageBatches(
 	}
 
 	// start routine to download blocks and push them in a channel
-	dsClientRunner := NewDatastreamClientRunner(cfg.dsClient, logPrefix)
+	dsClientRunner := NewDatastreamClientRunner(dsQueryClient, logPrefix)
 	dsClientRunner.StartRead()
 	defer dsClientRunner.StopRead()
 
-	entryChan := cfg.dsClient.GetEntryChan()
+	entryChan := dsQueryClient.GetEntryChan()
 
 	prevAmountBlocksWritten := uint64(0)
 	endLoop := false
@@ -261,15 +276,7 @@ func SpawnStageBatches(
 		// if ds end reached check again for new blocks in the stream
 		// if there are too many new blocks get them as well before ending stage
 		if batchProcessor.LastBlockHeight() >= highestDSL2Block.L2BlockNumber {
-			newLatestDSL2Block, err := dsQueryClient.GetLatestL2Block()
-			if err != nil {
-				return fmt.Errorf("failed to retrieve the latest datastream l2 block: %w", err)
-			}
-			if newLatestDSL2Block.L2BlockNumber > highestDSL2Block.L2BlockNumber+NEW_BLOCKS_ON_DS_LIMIT {
-				highestDSL2Block = newLatestDSL2Block
-			} else {
-				endLoop = true
-			}
+			endLoop = true
 		}
 
 		if endLoop {

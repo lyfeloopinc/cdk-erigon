@@ -17,8 +17,7 @@ func writeFullUint64ToConn(conn net.Conn, value uint64) error {
 		return errors.New("error nil connection")
 	}
 
-	_, err := conn.Write(buffer)
-	if err != nil {
+	if _, err := conn.Write(buffer); err != nil {
 		return fmt.Errorf("%s Error sending to server: %v", conn.RemoteAddr().String(), err)
 	}
 
@@ -31,8 +30,7 @@ func writeBytesToConn(conn net.Conn, value []byte) error {
 		return errors.New("error nil connection")
 	}
 
-	_, err := conn.Write(value)
-	if err != nil {
+	if _, err := conn.Write(value); err != nil {
 		return fmt.Errorf("%s Error sending to server: %v", conn.RemoteAddr().String(), err)
 	}
 
@@ -48,8 +46,7 @@ func writeFullUint32ToConn(conn net.Conn, value uint32) error {
 		return errors.New("error nil connection")
 	}
 
-	_, err := conn.Write(buffer)
-	if err != nil {
+	if _, err := conn.Write(buffer); err != nil {
 		return fmt.Errorf("%s Error sending to server: %v", conn.RemoteAddr().String(), err)
 	}
 
