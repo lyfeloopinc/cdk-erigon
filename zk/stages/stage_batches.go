@@ -185,7 +185,9 @@ func SpawnStageBatches(
 		}
 		highestDSL2Block, err = dsQueryClient.GetLatestL2Block()
 		if err != nil {
-			return fmt.Errorf("failed to retrieve the latest datastream l2 block: %w", err)
+			// if we return error, stage will replay and block all other stages
+			log.Warn(fmt.Sprintf("[%s] Failed to get latest l2 block from datastream: %v", logPrefix, err))
+			return nil
 		}
 
 		// a lower block should also break the loop because that means the datastream was unwound

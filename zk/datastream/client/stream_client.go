@@ -108,14 +108,16 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (fullBLock *types.Ful
 		socketErr error = nil
 		connected bool  = c.conn != nil
 	)
-
+	count := 0
 	for {
-
 		select {
 		case <-c.ctx.Done():
 			log.Warn("[Datastream client] Context done - stopping")
 			return nil, errorCode, nil
 		default:
+		}
+		if count > 5 {
+			return nil, -1, errors.New("failed to get the L2 block within 5 attempts")
 		}
 		if connected {
 			if fullBLock, errorCode, err, socketErr = c.getL2BlockByNumber(blockNum); err != nil {
@@ -127,6 +129,7 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (fullBLock *types.Ful
 		}
 		time.Sleep(1 * time.Second)
 		connected = c.handleSocketError(socketErr)
+		count++
 	}
 
 	return fullBLock, types.CmdErrOK, nil
@@ -187,13 +190,16 @@ func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error
 		socketErr error = nil
 		connected bool  = c.conn != nil
 	)
-
+	count := 0
 	for {
 		select {
 		case <-c.ctx.Done():
 			log.Warn("[Datastream client] Context done - stopping")
 			return nil, nil
 		default:
+		}
+		if count > 5 {
+			return nil, errors.New("failed to get the latest L2 block within 5 attempts")
 		}
 		if connected {
 			if l2Block, err, socketErr = c.getLatestL2Block(); err != nil {
@@ -206,6 +212,7 @@ func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error
 
 		time.Sleep(1 * time.Second)
 		connected = c.handleSocketError(socketErr)
+		count++
 	}
 	return l2Block, nil
 }
@@ -399,13 +406,16 @@ func (c *StreamClient) ReadAllEntriesToChannel() (err error) {
 		socketErr error = nil
 		connected bool  = c.conn != nil
 	)
-
+	count := 0
 	for {
 		select {
 		case <-c.ctx.Done():
 			log.Warn("[Datastream client] Context done - stopping")
 			return nil
 		default:
+		}
+		if count > 5 {
+			return errors.New("failed to read all entries within 5 attempts")
 		}
 		if connected {
 			if err, socketErr = c.readAllEntriesToChannel(); err != nil {
@@ -418,6 +428,7 @@ func (c *StreamClient) ReadAllEntriesToChannel() (err error) {
 
 		time.Sleep(1 * time.Second)
 		connected = c.handleSocketError(socketErr)
+		count++
 	}
 
 	return nil
