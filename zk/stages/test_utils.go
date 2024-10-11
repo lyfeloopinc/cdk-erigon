@@ -29,10 +29,6 @@ func NewTestDatastreamClient(fullL2Blocks []types.FullL2Block, gerUpdates []type
 	return client
 }
 
-func (c *TestDatastreamClient) EnsureConnected() (bool, error) {
-	return true, nil
-}
-
 func (c *TestDatastreamClient) ReadAllEntriesToChannel() error {
 	c.streamingAtomic.Store(true)
 	defer c.streamingAtomic.Swap(false)

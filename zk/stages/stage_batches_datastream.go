@@ -40,28 +40,8 @@ func (r *DatastreamClientRunner) StartRead() error {
 		r.isReading.Store(true)
 		defer r.isReading.Store(false)
 
-		for {
-			if r.stopRunner.Load() {
-				break
-			}
-
-			// this will download all blocks from datastream and push them in a channel
-			// if no error, break, else continue trying to get them
-			// Create bookmark
-			if err := r.dsClient.EnsureConnected(); err != nil {
-				log.Error(fmt.Sprintf("[%s] Error connecting to datastream", r.logPrefix), "error", err)
-				time.Sleep(10 * time.Millisecond)
-				continue
-			}
-
-			if err := r.dsClient.ReadAllEntriesToChannel(); err != nil {
-
-				log.Error(fmt.Sprintf("[%s] Error downloading blocks from datastream", r.logPrefix), "error", err)
-
-				time.Sleep(10 * time.Millisecond)
-				continue
-			}
-			break
+		if err := r.dsClient.ReadAllEntriesToChannel(); err != nil {
+			log.Warn(fmt.Sprintf("[%s] Error downloading blocks from datastream", r.logPrefix), "error", err)
 		}
 	}()
 

@@ -68,7 +68,6 @@ type DatastreamClient interface {
 	GetLatestL2Block() (*types.FullL2Block, error)
 	GetStreamingAtomic() *atomic.Bool
 	GetProgressAtomic() *atomic.Uint64
-	EnsureConnected() error
 	Start() error
 	Stop()
 }
