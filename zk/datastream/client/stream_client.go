@@ -112,8 +112,8 @@ func (c *StreamClient) GetL2BlockByNumber(blockNum uint64) (fullBLock *types.Ful
 	for {
 		select {
 		case <-c.ctx.Done():
-			log.Warn("[Datastream client] Context done - stopping")
-			return nil, errorCode, nil
+			return nil, errorCode, fmt.Errorf("[Datastream client] Context done - stopping")
+
 		default:
 		}
 		if count > 5 {
@@ -194,8 +194,7 @@ func (c *StreamClient) GetLatestL2Block() (l2Block *types.FullL2Block, err error
 	for {
 		select {
 		case <-c.ctx.Done():
-			log.Warn("[Datastream client] Context done - stopping")
-			return nil, nil
+			return nil, fmt.Errorf("[Datastream client] Context done - stopping")
 		default:
 		}
 		if count > 5 {
@@ -410,8 +409,7 @@ func (c *StreamClient) ReadAllEntriesToChannel() (err error) {
 	for {
 		select {
 		case <-c.ctx.Done():
-			log.Warn("[Datastream client] Context done - stopping")
-			return nil
+			return fmt.Errorf("[Datastream client] Context done - stopping")
 		default:
 		}
 		if count > 5 {
