@@ -551,6 +551,9 @@ LOOP:
 
 		if c.header.TotalEntries == entryNum+1 {
 			log.Trace("reached the end of the stream", "header_totalEntries", c.header.TotalEntries, "entryNum", entryNum)
+			if err = c.sendStopCmd(); err != nil {
+				return fmt.Errorf("failed to send the stop command: %v", err)
+			}
 			break LOOP
 		}
 	}
