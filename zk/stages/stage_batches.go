@@ -26,7 +26,6 @@ import (
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
-	"github.com/ledgerwatch/erigon/zk/datastream/client"
 	"github.com/ledgerwatch/log/v3"
 )
 
@@ -170,12 +169,13 @@ func SpawnStageBatches(
 		return err
 	}
 
-	dsQueryClient, err := newStreamClient(ctx, cfg, latestForkId)
+	dsQueryClient, stopDsClient, err := newStreamClient(ctx, cfg, latestForkId)
 	if err != nil {
 		log.Warn(fmt.Sprintf("[%s] %s", logPrefix, err))
 		return err
 	}
-	defer dsQueryClient.Stop()
+	defer stopDsClient()
+
 	var highestDSL2Block *types.FullL2Block
 	for {
 		select {
@@ -716,25 +716,22 @@ func getUnwindPoint(eriDb erigon_db.ReadOnlyErigonDb, hermezDb state.ReadOnlyHer
 }
 
 // newStreamClient instantiates new datastreamer client and starts it.
-func newStreamClient(ctx context.Context, cfg BatchesCfg, latestForkId uint64) (DatastreamClient, error) {
-	var (
-		dsClient DatastreamClient
-		err      error
-	)
-
+func newStreamClient(ctx context.Context, cfg BatchesCfg, latestForkId uint64) (dsClient DatastreamClient, stopFn func(), err error) {
 	if cfg.dsQueryClientCreator != nil {
 		dsClient, err = cfg.dsQueryClientCreator(ctx, cfg.zkCfg, latestForkId)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create a datastream client. Reason: %w", err)
+			return nil, nil, fmt.Errorf("failed to create a datastream client. Reason: %w", err)
+		}
+		if err := dsClient.Start(); err != nil {
+			return nil, nil, fmt.Errorf("failed to start a datastream client. Reason: %w", err)
+		}
+		stopFn = func() {
+			dsClient.Stop()
 		}
 	} else {
-		zkCfg := cfg.zkCfg
-		dsClient = client.NewClient(ctx, zkCfg.L2DataStreamerUrl, zkCfg.DatastreamVersion, zkCfg.L2DataStreamerTimeout, uint16(latestForkId))
+		dsClient = cfg.dsClient
+		stopFn = func() {}
 	}
 
-	if err := dsClient.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start a datastream client. Reason: %w", err)
-	}
-
-	return dsClient, nil
+	return dsClient, stopFn, nil
 }

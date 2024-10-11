@@ -261,8 +261,8 @@ func (c *StreamClient) Stop() {
 	if err := c.sendStopCmd(); err != nil {
 		log.Warn(fmt.Sprintf("Failed to send the stop command to the data stream server: %s", err))
 	}
-	c.conn.Close()
-	c.conn = nil
+	// c.conn.Close()
+	// c.conn = nil
 }
 
 // Command header: Get status
