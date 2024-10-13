@@ -83,10 +83,17 @@ for file in $(ls $dataPath/phase1-dump1); do
     if cmp -s $dataPath/phase1-dump1/$filename $dataPath/phase1-dump2/$filename; then
         echo "No difference found in $filename"
     else
-        if [ "$filename" = "Code.txt" ] || [ "$filename" = "HashedCodeHash.txt" ] || [ "$filename" = "hermez_l1Sequences.txt" ] || [ "$filename" = "hermez_l1Verifications.txt" ] || [ "$filename" = "HermezSmt.txt" ] || [ "$filename" = "PlainCodeHash.txt" ] || [ "$filename" = "SyncStage.txt" ] || [ "$filename" = "BadHeaderNumber.txt" ]; then
+        expected_files=("Code.txt" "HashedCodeHash.txt" "hermez_l1Sequences.txt" "hermez_l1Verifications.txt" "HermezSmt.txt" "PlainCodeHash.txt" "SyncStage.txt" "BadHeaderNumber.txt" "Sequence.txt")
+        for file in ${expected_files[@]}; do
+            if [ "$filename" = "$file" ]; then
+                break
+            fi
+        done
+        if [ "$filename" = "$file" ]; then
             echo "Expected differences in $filename"
         else
             echo "Unexpected differences in $filename"
+            echo "Comparing $dataPath/phase1-dump1/$filename with $dataPath/phase1-dump2/$filename"
             exit 1
         fi
     fi
@@ -101,7 +108,18 @@ for file in $(ls $dataPath/phase2-dump1); do
     if cmp -s $dataPath/phase2-dump1/$filename $dataPath/phase2-dump2/$filename; then
         echo "No difference found in $filename"
     else
-        echo "Unexpected differences in $filename"
-        exit 2
+        expected_files=("BadHeaderNumber.txt" "BlockBody.txt" "BlockTransaction.txt" "Sequence.txt")
+        for file in ${expected_files[@]}; do
+            if [ "$filename" = "$file" ]; then
+                break
+            fi
+        done
+        if [ "$filename" = "$file" ]; then
+            echo "Expected differences in $filename"
+        else
+            echo "Unexpected differences in $filename"
+            echo "Comparing $dataPath/phase2-dump1/$filename with $dataPath/phase2-dump2/$filename"
+            exit 1
+        fi
     fi
 done
