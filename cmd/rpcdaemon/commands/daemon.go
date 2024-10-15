@@ -12,9 +12,9 @@ import (
 	"github.com/ledgerwatch/erigon/rpc"
 	"github.com/ledgerwatch/erigon/turbo/rpchelper"
 	"github.com/ledgerwatch/erigon/turbo/services"
+	"github.com/ledgerwatch/erigon/zk/sequencer"
 	"github.com/ledgerwatch/erigon/zk/syncer"
 	txpool2 "github.com/ledgerwatch/erigon/zk/txpool"
-	"github.com/ledgerwatch/erigon/zk/sequencer"
 )
 
 // APIList describes the list of available RPC apis
@@ -32,7 +32,7 @@ func APIList(db kv.RoDB, borDb kv.RoDB, eth rpchelper.ApiBackend, txPool txpool.
 
 	base := NewBaseApi(filters, stateCache, blockReader, agg, cfg.WithDatadir, cfg.EvmCallTimeout, engine, cfg.Dirs)
 	base.SetL2RpcUrl(ethCfg.L2RpcUrl)
-	base.SetGasless(ethCfg.Gasless)
+	base.SetGasless(ethCfg.AllowFreeTransactions)
 	ethImpl := NewEthAPI(base, db, eth, txPool, mining, cfg.Gascap, cfg.ReturnDataLimit, ethCfg)
 	erigonImpl := NewErigonAPI(base, db, eth)
 	txpoolImpl := NewTxPoolAPI(base, db, txPool, rawPool, rpcUrl)
@@ -164,7 +164,7 @@ func AuthAPIList(db kv.RoDB, eth rpchelper.ApiBackend, txPool txpool.TxpoolClien
 ) (list []rpc.API) {
 	base := NewBaseApi(filters, stateCache, blockReader, agg, cfg.WithDatadir, cfg.EvmCallTimeout, engine, cfg.Dirs)
 	base.SetL2RpcUrl(ethCfg.L2RpcUrl)
-	base.SetGasless(ethCfg.Gasless)
+	base.SetGasless(ethCfg.AllowFreeTransactions)
 
 	ethImpl := NewEthAPI(base, db, eth, txPool, mining, cfg.Gascap, cfg.ReturnDataLimit, ethCfg)
 	engineImpl := NewEngineAPI(base, db, eth, cfg.InternalCL)
