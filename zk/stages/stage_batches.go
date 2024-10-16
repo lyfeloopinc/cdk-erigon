@@ -153,6 +153,14 @@ func SpawnStageBatches(
 
 	//// BISECT ////
 	if cfg.zkCfg.DebugLimit > 0 && stageProgressBlockNo > cfg.zkCfg.DebugLimit {
+		log.Info(fmt.Sprintf("[%s] Debug limit reached", logPrefix), "stageProgressBlockNo", stageProgressBlockNo, "debugLimit", cfg.zkCfg.DebugLimit)
+		time.Sleep(2 * time.Second)
+		return nil
+	}
+
+	if cfg.zkCfg.SyncLimit > 0 && stageProgressBlockNo > cfg.zkCfg.SyncLimit {
+		log.Info(fmt.Sprintf("[%s] Sync limit reached", logPrefix), "stageProgressBlockNo", stageProgressBlockNo, "syncLimit", cfg.zkCfg.SyncLimit)
+		time.Sleep(2 * time.Second)
 		return nil
 	}
 

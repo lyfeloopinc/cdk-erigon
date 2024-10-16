@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 	"sync/atomic"
-	"time"
 
 	"github.com/ledgerwatch/erigon-lib/chain"
 	"github.com/ledgerwatch/erigon-lib/common"
@@ -211,7 +210,6 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (endL
 	if p.syncBlockLimit > 0 && blockEntry.L2BlockNumber >= p.syncBlockLimit {
 		// stop the node going into a crazy loop
 		log.Info(fmt.Sprintf("[%s] Sync block limit reached, stopping stage", p.logPrefix), "blockLimit", p.syncBlockLimit, "block", blockEntry.L2BlockNumber)
-		time.Sleep(2 * time.Second)
 		return true, nil
 	}
 
