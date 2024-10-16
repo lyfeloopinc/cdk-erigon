@@ -205,7 +205,7 @@ func SpawnStageBatches(
 		stageProgressBlockNo = highestDSL2Block.L2BlockNumber
 	}
 
-	log.Info(fmt.Sprintf("[%s] Highest block in db and datastream", logPrefix), "datastreamBlock", highestDSL2Block.L2BlockNumber, "dbBlock", stageProgressBlockNo)
+	log.Debug(fmt.Sprintf("[%s] Highest block in db and datastream", logPrefix), "datastreamBlock", highestDSL2Block.L2BlockNumber, "dbBlock", stageProgressBlockNo)
 
 	dsClientProgress := dsQueryClient.GetProgressAtomic()
 	dsClientProgress.Swap(stageProgressBlockNo)
@@ -278,6 +278,7 @@ func SpawnStageBatches(
 		// if ds end reached check again for new blocks in the stream
 		// if there are too many new blocks get them as well before ending stage
 		if batchProcessor.LastBlockHeight() >= highestDSL2Block.L2BlockNumber {
+			log.Info(fmt.Sprintf("[%s] Reached the end of the datastream", logPrefix), "datastreamBlock", highestDSL2Block.L2BlockNumber, "lastWrittenBlock", batchProcessor.LastBlockHeight())
 			endLoop = true
 		}
 
