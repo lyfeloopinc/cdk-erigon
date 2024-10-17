@@ -202,7 +202,7 @@ func SpawnStageBatches(
 		// a lower block should also break the loop because that means the datastream was unwound
 		// thus we should unwind as well and continue from there
 		if highestDSL2Block.L2BlockNumber != stageProgressBlockNo {
-			log.Info(fmt.Sprintf("[%s] Highest block in datastream", logPrefix), "datastreamBlock", highestDSL2Block.L2BlockNumber)
+			log.Info(fmt.Sprintf("[%s] Highest block in datastream", logPrefix), "datastreamBlock", highestDSL2Block.L2BlockNumber, "stageProgressBlockNo", stageProgressBlockNo)
 			break
 		}
 

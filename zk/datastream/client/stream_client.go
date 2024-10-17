@@ -294,7 +294,7 @@ func (c *StreamClient) GetHeader() (*types.HeaderEntry, error) {
 	}
 
 	// Read packet
-	packet, err := readBuffer(c.conn, 1)
+	packet, err := c.readBuffer(1)
 	if err != nil {
 		return nil, fmt.Errorf("%s read buffer: %v", c.id, err)
 	}
@@ -695,7 +695,7 @@ func ReadParsedProto(iterator FileEntryIterator) (
 // returns the parsed FileEntry
 func (c *StreamClient) NextFileEntry() (file *types.FileEntry, err error) {
 	// Read packet type
-	packet, err := readBuffer(c.conn, 1)
+	packet, err := c.readBuffer(1)
 	if err != nil {
 		return file, fmt.Errorf("failed to read packet type: %v", err)
 	}
@@ -717,7 +717,7 @@ func (c *StreamClient) NextFileEntry() (file *types.FileEntry, err error) {
 	}
 
 	// Read the rest of fixed size fields
-	buffer, err := readBuffer(c.conn, types.FileEntryMinSize-1)
+	buffer, err := c.readBuffer(types.FileEntryMinSize - 1)
 	if err != nil {
 		return file, fmt.Errorf("error reading file bytes: %v", err)
 	}
@@ -734,7 +734,7 @@ func (c *StreamClient) NextFileEntry() (file *types.FileEntry, err error) {
 	}
 
 	// Read rest of the file data
-	bufferAux, err := readBuffer(c.conn, length-types.FileEntryMinSize)
+	bufferAux, err := c.readBuffer(length - types.FileEntryMinSize)
 	if err != nil {
 		return file, fmt.Errorf("error reading file data bytes: %v", err)
 	}
@@ -757,7 +757,7 @@ func (c *StreamClient) NextFileEntry() (file *types.FileEntry, err error) {
 func (c *StreamClient) readHeaderEntry() (h *types.HeaderEntry, err error) {
 
 	// Read header stream bytes
-	binaryHeader, err := readBuffer(c.conn, types.HeaderSizePreEtrog)
+	binaryHeader, err := c.readBuffer(types.HeaderSizePreEtrog)
 	if err != nil {
 		return h, fmt.Errorf("failed to read header bytes %v", err)
 	}
@@ -765,7 +765,7 @@ func (c *StreamClient) readHeaderEntry() (h *types.HeaderEntry, err error) {
 	headLength := binary.BigEndian.Uint32(binaryHeader[1:5])
 	if headLength == types.HeaderSize {
 		// Read the rest of fixed size fields
-		buffer, err := readBuffer(c.conn, types.HeaderSize-types.HeaderSizePreEtrog)
+		buffer, err := c.readBuffer(types.HeaderSize - types.HeaderSizePreEtrog)
 		if err != nil {
 			return h, fmt.Errorf("failed to read header bytes %v", err)
 		}
@@ -788,7 +788,7 @@ func (c *StreamClient) readResultEntry(packet []byte) (re *types.ResultEntry, er
 	}
 
 	// Read the rest of fixed size fields
-	buffer, err := readBuffer(c.conn, types.ResultEntryMinSize-1)
+	buffer, err := c.readBuffer(types.ResultEntryMinSize - 1)
 	if err != nil {
 		return re, fmt.Errorf("failed to read main result bytes %v", err)
 	}
@@ -801,7 +801,7 @@ func (c *StreamClient) readResultEntry(packet []byte) (re *types.ResultEntry, er
 	}
 
 	// read the rest of the result
-	bufferAux, err := readBuffer(c.conn, length-types.ResultEntryMinSize)
+	bufferAux, err := c.readBuffer(length - types.ResultEntryMinSize)
 	if err != nil {
 		return re, fmt.Errorf("failed to read result errStr bytes %v", err)
 	}
@@ -818,7 +818,7 @@ func (c *StreamClient) readResultEntry(packet []byte) (re *types.ResultEntry, er
 // readPacketAndDecodeResultEntry reads the packet from the connection and tries to decode the ResultEntry from it.
 func (c *StreamClient) readPacketAndDecodeResultEntry() (*types.ResultEntry, error) {
 	// Read packet
-	packet, err := readBuffer(c.conn, 1)
+	packet, err := c.readBuffer(1)
 	if err != nil {
 		return nil, fmt.Errorf("read buffer error: %w", err)
 	}
@@ -830,4 +830,33 @@ func (c *StreamClient) readPacketAndDecodeResultEntry() (*types.ResultEntry, err
 	}
 
 	return r, nil
+}
+
+func (c *StreamClient) readBuffer(amount uint32) ([]byte, error) {
+	c.resetReadTimeout()
+	return readBuffer(c.conn, amount)
+}
+
+type writeType uint8
+
+func (c *StreamClient) writeToConn(data interface{}) error {
+	c.resetWriteTimeout()
+	switch parsed := data.(type) {
+	case []byte:
+		return writeBytesToConn(c.conn, parsed)
+	case uint32:
+		return writeFullUint32ToConn(c.conn, parsed)
+	case uint64:
+		return writeFullUint64ToConn(c.conn, parsed)
+	default:
+		return errors.New("unexpected write type")
+	}
+}
+
+func (c *StreamClient) resetWriteTimeout() {
+	c.conn.SetWriteDeadline(time.Now().Add(c.checkTimeout))
+}
+
+func (c *StreamClient) resetReadTimeout() {
+	c.conn.SetReadDeadline(time.Now().Add(c.checkTimeout))
 }

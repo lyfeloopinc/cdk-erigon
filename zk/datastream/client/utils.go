@@ -8,7 +8,6 @@ import (
 	"net"
 )
 
-// writeFullUint64ToConn writes a uint64 to a connection
 func writeFullUint64ToConn(conn net.Conn, value uint64) error {
 	buffer := make([]byte, 8)
 	binary.BigEndian.PutUint64(buffer, value)
@@ -24,7 +23,6 @@ func writeFullUint64ToConn(conn net.Conn, value uint64) error {
 	return nil
 }
 
-// writeFullUint64ToConn writes a uint64 to a connection
 func writeBytesToConn(conn net.Conn, value []byte) error {
 	if conn == nil {
 		return errors.New("error nil connection")
