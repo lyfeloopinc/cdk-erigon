@@ -213,9 +213,6 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (endL
 		return true, nil
 	}
 
-	// handle batch boundary changes - we do this here instead of reading the batch start channel because
-	// channels can be read in random orders which then creates problems in detecting fork changes during
-	// execution
 	if blockEntry.BatchNumber > p.highestSeenBatchNo && p.lastForkId < blockEntry.ForkId {
 		if blockEntry.ForkId > HIGHEST_KNOWN_FORK {
 			message := fmt.Sprintf("unsupported fork id %v received from the data stream", blockEntry.ForkId)

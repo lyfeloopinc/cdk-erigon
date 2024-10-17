@@ -159,7 +159,7 @@ func SpawnStageBatches(
 	}
 
 	// this limit is blocknumber not included, so up to limit-1
-	if cfg.zkCfg.SyncLimit > 0 && stageProgressBlockNo >= cfg.zkCfg.SyncLimit+1 {
+	if cfg.zkCfg.SyncLimit > 0 && stageProgressBlockNo+1 >= cfg.zkCfg.SyncLimit {
 		log.Info(fmt.Sprintf("[%s] Sync limit reached", logPrefix), "stageProgressBlockNo", stageProgressBlockNo, "syncLimit", cfg.zkCfg.SyncLimit)
 		time.Sleep(2 * time.Second)
 		return nil
