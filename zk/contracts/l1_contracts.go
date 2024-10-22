@@ -18,4 +18,7 @@ var (
 	CreateNewRollupTopic           = common.HexToHash("0x194c983456df6701c6a50830b90fe80e72b823411d0d524970c9590dc277a641")
 	UpdateRollupTopic              = common.HexToHash("0xf585e04c05d396901170247783d3e5f0ee9c1df23072985b50af089f5e48b19d")
 	RollbackBatchesTopic           = common.HexToHash("0x1125aaf62d132d8e2d02005114f8fc360ff204c3105e4f1a700a1340dc55d5b1")
+
+	// pre-etrog event for updating rollups
+	UpdateZkevmVersionTopic = common.HexToHash("0xed7be53c9f1a96a481223b15568a5b1a475e01a74b347d6ca187c8bf0c078cd6")
 )

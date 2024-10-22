@@ -167,6 +167,22 @@ Loop:
 					if funcErr = hermezDb.WriteNewForkHistory(fork, latestVerified); funcErr != nil {
 						return funcErr
 					}
+				case contracts.UpdateZkevmVersionTopic:
+					// these legacy type events only applu to the zkevm chains that are rollup id 1
+					// so we can discard them for other networks
+					if cfg.zkCfg.L1RollupId != 1 {
+						continue
+					}
+					batchNumHex := l.Data[0:32]
+					bactchNum := new(big.Int).SetBytes(batchNumHex).Uint64()
+					forkIdHex := l.Data[32:64]
+					forkId := new(big.Int).SetBytes(forkIdHex).Uint64()
+
+					// if we have detected this event then we are syncing against an older network so can
+					// treat this as a direct call to upgrade this network at this batch to the new fork
+					if funcErr = hermezDb.WriteNewForkHistory(forkId, bactchNum); funcErr != nil {
+						return funcErr
+					}
 				default:
 					log.Warn("received unexpected topic from l1 sequencer sync stage", "topic", l.Topics[0])
 				}

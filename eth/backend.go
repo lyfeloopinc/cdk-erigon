@@ -1050,6 +1050,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 				contracts.AddNewRollupTypeTopicBanana,
 				contracts.CreateNewRollupTopic,
 				contracts.UpdateRollupTopic,
+				contracts.UpdateZkevmVersionTopic,
 			}}
 			l1Contracts = []libcommon.Address{cfg.AddressZkevm, cfg.AddressRollup}
 		} else {
