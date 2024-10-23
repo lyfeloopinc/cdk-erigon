@@ -94,14 +94,13 @@ kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "nohup cdk-erigon --pprof=
 # Wait for cdk-erigon to start
 sleep 30
 
-echo "Running loadtest using polycli"
-
 local cdk_erigon_rpc_url
 cdk_erigon_rpc_url=$(kurtosis port print cdk-v1 cdk-erigon-node-001 rpc)
 
 local cdk_erigon_seq_url
 cdk_erigon_seq_url=$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)
 
+echo "Running loadtest using polycli"
 /usr/local/bin/polycli loadtest uniswapv3 --legacy --rpc-url $cdk_erigon_rpc_url --private-key "0x12d7de8621a77640c9241b2595ba78ce443d05e94090365ab3bb5e19df82c625" \
     --verbosity 600 --requests 2000 --rate-limit 500
 
