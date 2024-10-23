@@ -240,7 +240,7 @@ func SpawnStageBatches(
 		// if download routine finished, should continue to read from channel until it's empty
 		// if both download routine stopped and channel empty - stop loop
 		// we will wait some time for a new block to arrive before continuing the stage
-		now := time.Now()
+		attempts := 0
 		blockRead := false
 	ReadLoop:
 		for {
@@ -262,18 +262,19 @@ func SpawnStageBatches(
 					return nil
 				}
 
-				now = time.Now()
 				blockRead = true
+				attempts = 0
 			case <-ctx.Done():
 				log.Warn(fmt.Sprintf("[%s] Context done", logPrefix))
 				endLoop = true
 				break ReadLoop
 			default:
-				if blockRead && time.Since(now) > 100*time.Millisecond {
+				if blockRead && attempts > 10 {
 					log.Info(fmt.Sprintf("[%s] No new blocks in the datastream, breaking loop", logPrefix))
 					break ReadLoop
 				}
 				time.Sleep(10 * time.Millisecond)
+				attempts++
 			}
 		}
 
