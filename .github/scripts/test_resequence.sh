@@ -5,10 +5,10 @@ get_latest_l2_batch() {
     cdk_erigon_seq_url=$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)
 
     local latest_block
-    latest_block=$(cast block latest --rpc-url $cdk_erigon_seq_url | grep "number" | awk '{print $2}')
+    latest_block=$(cast block latest --rpc-url "$cdk_erigon_seq_url" | grep "number" | awk '{print $2}')
 
     local latest_batch
-    latest_batch=$(cast rpc zkevm_batchNumberByBlockNumber "$latest_block" --rpc-url $cdk_erigon_seq_url | sed 's/^"//;s/"$//')
+    latest_batch=$(cast rpc zkevm_batchNumberByBlockNumber "$latest_block" --rpc-url "$cdk_erigon_seq_url" | sed 's/^"//;s/"$//')
 
     if [[ -z "$latest_batch" ]]; then
         echo "Error: Failed to get latest batch number" >&2
@@ -94,14 +94,11 @@ kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "nohup cdk-erigon --pprof=
 # Wait for cdk-erigon to start
 sleep 30
 
-local cdk_erigon_rpc_url
 cdk_erigon_rpc_url=$(kurtosis port print cdk-v1 cdk-erigon-node-001 rpc)
-
-local cdk_erigon_seq_url
 cdk_erigon_seq_url=$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)
 
 echo "Running loadtest using polycli"
-/usr/local/bin/polycli loadtest uniswapv3 --legacy --rpc-url $cdk_erigon_rpc_url --private-key "0x12d7de8621a77640c9241b2595ba78ce443d05e94090365ab3bb5e19df82c625" \
+/usr/local/bin/polycli loadtest uniswapv3 --legacy --rpc-url "$cdk_erigon_rpc_url" --private-key "0x12d7de8621a77640c9241b2595ba78ce443d05e94090365ab3bb5e19df82c625" \
     --verbosity 600 --requests 2000 --rate-limit 500
 
 echo "Waiting for batch virtualization"
@@ -140,7 +137,7 @@ echo "Restarting cdk node"
 kurtosis service start cdk-v1 cdk-node-001
 
 echo "Getting latest block number from sequencer"
-latest_block=$(cast block latest --rpc-url $cdk_erigon_seq_url | grep "number" | awk '{print $2}')
+latest_block=$(cast block latest --rpc-url "$cdk_erigon_seq_url" | grep "number" | awk '{print $2}')
 echo "Latest block number from sequencer: $latest_block"
 
 echo "Calculating comparison block number"
@@ -148,10 +145,10 @@ comparison_block=$((latest_block - 10))
 echo "Block number to compare (10 blocks behind): $comparison_block"
 
 echo "Getting block hash from sequencer"
-sequencer_hash=$(cast block $comparison_block --rpc-url $cdk_erigon_seq_url | grep "hash" | awk '{print $2}')
+sequencer_hash=$(cast block $comparison_block --rpc-url "$cdk_erigon_seq_url" | grep "hash" | awk '{print $2}')
 
 echo "Getting block hash from node"
-node_hash=$(cast block $comparison_block --rpc-url $cdk_erigon_rpc_url | grep "hash" | awk '{print $2}')
+node_hash=$(cast block $comparison_block --rpc-url "$cdk_erigon_rpc_url" | grep "hash" | awk '{print $2}')
 
 echo "Sequencer block hash: $sequencer_hash"
 echo "Node block hash: $node_hash"
