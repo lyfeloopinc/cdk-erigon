@@ -281,10 +281,13 @@ func (p *BatchesProcessor) processFullBlock(blockEntry *types.FullL2Block) (rest
 		return blockEntry.L2BlockNumber - 1, false, true, nil
 	}
 
-	// skip if we already have this block
+	// unwind if we already have this block - could be a re-sequence event
 	if blockEntry.L2BlockNumber < p.lastBlockHeight+1 {
-		log.Warn(fmt.Sprintf("[%s] Skipping block %d, already processed", p.logPrefix, blockEntry.L2BlockNumber))
-		return 0, false, false, nil
+		log.Warn(fmt.Sprintf("[%s] Skipping block %d, already processed, triggering unwind...", p.logPrefix, blockEntry.L2BlockNumber))
+		if err = p.unwindFn(blockEntry.L2BlockNumber); err != nil {
+			return 0, false, false, err
+		}
+		return blockEntry.L2BlockNumber, false, true, nil
 	}
 
 	// check for sequential block numbers
