@@ -239,28 +239,42 @@ func SpawnStageBatches(
 		// if no blocks available should block
 		// if download routine finished, should continue to read from channel until it's empty
 		// if both download routine stopped and channel empty - stop loop
-		select {
-		case entry := <-*entryChan:
-			if restartDatastreamBlock, endLoop, unwound, err = batchProcessor.ProcessEntry(entry); err != nil {
-				return err
-			}
-			dsClientProgress.Store(batchProcessor.LastBlockHeight())
-
-			if restartDatastreamBlock > 0 {
-				if err = dsClientRunner.RestartReadFromBlock(restartDatastreamBlock); err != nil {
+		// we will wait some time for a new block to arrive before continuing the stage
+		now := time.Now()
+		blockRead := false
+	ReadLoop:
+		for {
+			select {
+			case entry := <-*entryChan:
+				if restartDatastreamBlock, endLoop, unwound, err = batchProcessor.ProcessEntry(entry); err != nil {
 					return err
 				}
-			}
+				dsClientProgress.Store(batchProcessor.LastBlockHeight())
 
-			// if we triggered an unwind somewhere we need to return from the stage
-			if unwound {
-				return nil
+				if restartDatastreamBlock > 0 {
+					if err = dsClientRunner.RestartReadFromBlock(restartDatastreamBlock); err != nil {
+						return err
+					}
+				}
+
+				// if we triggered an unwind somewhere we need to return from the stage
+				if unwound {
+					return nil
+				}
+
+				now = time.Now()
+				blockRead = true
+			case <-ctx.Done():
+				log.Warn(fmt.Sprintf("[%s] Context done", logPrefix))
+				endLoop = true
+				break ReadLoop
+			default:
+				if blockRead && time.Since(now) > 100*time.Millisecond {
+					log.Info(fmt.Sprintf("[%s] No new blocks in the datastream, breaking loop", logPrefix))
+					break ReadLoop
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
-		case <-ctx.Done():
-			log.Warn(fmt.Sprintf("[%s] Context done", logPrefix))
-			endLoop = true
-		default:
-			time.Sleep(10 * time.Millisecond)
 		}
 
 		// if ds end reached check again for new blocks in the stream
