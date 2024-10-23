@@ -1,19 +1,22 @@
 #!/bin/bash
 
 get_latest_l2_batch() {
+    local cdk_erigon_seq_url
+    cdk_erigon_seq_url=$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)
+
     local latest_block
-    latest_block=$(cast block latest --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)" | grep "number" | awk '{print $2}')
+    latest_block=$(cast block latest --rpc-url $cdk_erigon_seq_url | grep "number" | awk '{print $2}')
 
     local latest_batch
-    latest_batch=$(cast rpc zkevm_batchNumberByBlockNumber "$latest_block" --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)" | sed 's/^"//;s/"$//')
-    
+    latest_batch=$(cast rpc zkevm_batchNumberByBlockNumber "$latest_block" --rpc-url $cdk_erigon_seq_url | sed 's/^"//;s/"$//')
+
     if [[ -z "$latest_batch" ]]; then
         echo "Error: Failed to get latest batch number" >&2
         return 1
     fi
-    
+
     latest_batch_dec=$((latest_batch))
-    
+
     echo "$latest_batch_dec"
 }
 
@@ -22,7 +25,6 @@ get_latest_l1_verified_batch() {
     current_batch_dec=$((16#$current_batch))
     echo "$current_batch_dec"
 }
-
 
 wait_for_l1_batch() {
     local timeout=$1
@@ -84,7 +86,7 @@ set -e
 stop_cdk_erigon_sequencer
 
 echo "Copying and modifying config"
-kurtosis service exec cdk-v1  cdk-erigon-sequencer-001 'cp \-r /etc/cdk-erigon/ /tmp/ && sed -i '\''s/zkevm\.executor-strict: true/zkevm.executor-strict: false/;s/zkevm\.executor-urls: zkevm-stateless-executor-001:50071/zkevm.executor-urls: ","/;$a zkevm.disable-virtual-counters: true'\'' /tmp/cdk-erigon/config.yaml'
+kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 'cp \-r /etc/cdk-erigon/ /tmp/ && sed -i '\''s/zkevm\.executor-strict: true/zkevm.executor-strict: false/;s/zkevm\.executor-urls: zkevm-stateless-executor-001:50071/zkevm.executor-urls: ","/;$a zkevm.disable-virtual-counters: true'\'' /tmp/cdk-erigon/config.yaml'
 
 echo "Starting cdk-erigon with modified config"
 kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "nohup cdk-erigon --pprof=true --pprof.addr 0.0.0.0 --config /tmp/cdk-erigon/config.yaml --datadir /home/erigon/data/dynamic-kurtosis-sequencer > /proc/1/fd/1 2>&1 &"
@@ -93,7 +95,15 @@ kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "nohup cdk-erigon --pprof=
 sleep 30
 
 echo "Running loadtest using polycli"
-/usr/local/bin/polycli loadtest --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-node-001 rpc)" --private-key "0x12d7de8621a77640c9241b2595ba78ce443d05e94090365ab3bb5e19df82c625" --verbosity 600 --requests 2000 --rate-limit 500  --mode uniswapv3 --legacy
+
+local cdk_erigon_rpc_url
+cdk_erigon_rpc_url=$(kurtosis port print cdk-v1 cdk-erigon-node-001 rpc)
+
+local cdk_erigon_seq_url
+cdk_erigon_seq_url=$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)
+
+/usr/local/bin/polycli loadtest uniswapv3 --legacy --rpc-url $cdk_erigon_rpc_url --private-key "0x12d7de8621a77640c9241b2595ba78ce443d05e94090365ab3bb5e19df82c625" \
+    --verbosity 600 --requests 2000 --rate-limit 500
 
 echo "Waiting for batch virtualization"
 if ! wait_for_l1_batch 600 "virtual"; then
@@ -105,7 +115,6 @@ echo "Stopping cdk node"
 kurtosis service stop cdk-v1 cdk-node-001
 
 stop_cdk_erigon_sequencer
-
 
 # Good batch before counter overflow
 latest_verified_batch=$(get_latest_l1_verified_batch)
@@ -132,7 +141,7 @@ echo "Restarting cdk node"
 kurtosis service start cdk-v1 cdk-node-001
 
 echo "Getting latest block number from sequencer"
-latest_block=$(cast block latest --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)" | grep "number" | awk '{print $2}')
+latest_block=$(cast block latest --rpc-url $cdk_erigon_seq_url | grep "number" | awk '{print $2}')
 echo "Latest block number from sequencer: $latest_block"
 
 echo "Calculating comparison block number"
@@ -140,10 +149,10 @@ comparison_block=$((latest_block - 10))
 echo "Block number to compare (10 blocks behind): $comparison_block"
 
 echo "Getting block hash from sequencer"
-sequencer_hash=$(cast block $comparison_block --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-sequencer-001 rpc)" | grep "hash" | awk '{print $2}')
+sequencer_hash=$(cast block $comparison_block --rpc-url $cdk_erigon_seq_url | grep "hash" | awk '{print $2}')
 
 echo "Getting block hash from node"
-node_hash=$(cast block $comparison_block --rpc-url "$(kurtosis port print cdk-v1 cdk-erigon-node-001 rpc)" | grep "hash" | awk '{print $2}')
+node_hash=$(cast block $comparison_block --rpc-url $cdk_erigon_rpc_url | grep "hash" | awk '{print $2}')
 
 echo "Sequencer block hash: $sequencer_hash"
 echo "Node block hash: $node_hash"
