@@ -239,6 +239,10 @@ func SpawnStageBatches(
 		// if no blocks available should block
 		// if download routine finished, should continue to read from channel until it's empty
 		// if both download routine stopped and channel empty - stop loop
+
+		timeoutCtx, cancelTimeout := context.WithTimeout(ctx, cfg.zkCfg.SequencerBatchSealTime)
+		defer cancelTimeout()
+
 		select {
 		case entry := <-*entryChan:
 			if restartDatastreamBlock, endLoop, unwound, err = batchProcessor.ProcessEntry(entry); err != nil {
@@ -259,8 +263,8 @@ func SpawnStageBatches(
 		case <-ctx.Done():
 			log.Warn(fmt.Sprintf("[%s] Context done", logPrefix))
 			endLoop = true
-		default:
-			time.Sleep(10 * time.Millisecond)
+		case <-timeoutCtx.Done():
+			log.Warn(fmt.Sprintf("[%s] Timeout reached", logPrefix))
 		}
 
 		// if ds end reached check again for new blocks in the stream
