@@ -21,7 +21,15 @@ get_latest_l2_batch() {
 }
 
 get_latest_l1_verified_batch() {
-    current_batch=$(cast logs --rpc-url "$(kurtosis port print cdk-v1 el-1-geth-lighthouse rpc)" --address 0x1Fe038B54aeBf558638CA51C91bC8cCa06609e91 --from-block 0 -j | jq -r '.[] | select(.topics[0] == "0x9c72852172521097ba7e1482e6b44b351323df0155f97f4ea18fcec28e1f5966" or .topics[0] == "0xd1ec3a1216f08b6eff72e169ceb548b782db18a6614852618d86bb19f3f9b0d3") | .topics[1]' | tail -n 1 | sed 's/^0x//')
+    local l1_rpc_url
+    l1_rpc_url=$(kurtosis port print cdk-v1 el-1-geth-lighthouse rpc)
+
+    current_batch=$(cast logs --rpc-url "$l1_rpc_url" \
+        --address 0x1Fe038B54aeBf558638CA51C91bC8cCa06609e91 \
+        --from-block 0 -j | jq -r '.[] | select(.topics[0] == "0x9c72852172521097ba7e1482e6b44b351323df0155f97f4ea18fcec28e1f5966" \
+    or .topics[0] == "0xd1ec3a1216f08b6eff72e169ceb548b782db18a6614852618d86bb19f3f9b0d3") | .topics[1]' |
+        tail -n 1 | sed 's/^0x//')
+
     current_batch_dec=$((16#$current_batch))
     echo "$current_batch_dec"
 }
@@ -123,7 +131,7 @@ echo "Using integration tool to unwind to batch $latest_verified_batch"
 kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "integration state_stages_zkevm --config=/etc/cdk-erigon/config.yaml --unwind-batch-no=$latest_verified_batch --chain dynamic-kurtosis --datadir /home/erigon/data/dynamic-kurtosis-sequencer"
 
 echo "Starting cdk-erigon with resequencing and counter enabled"
-kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "timeout 300s cdk-erigon --pprof=true --pprof.addr 0.0.0.0 --config /etc/cdk-erigon/config.yaml --datadir /home/erigon/data/dynamic-kurtosis-sequencer  --zkevm.sequencer-resequence-strict=false --zkevm.sequencer-resequence=true --zkevm.sequencer-resequence-reuse-l1-info-index=true"
+kurtosis service exec cdk-v1 cdk-erigon-sequencer-001 "timeout 300s cdk-erigon --pprof=true --pprof.addr 0.0.0.0 --config /etc/cdk-erigon/config.yaml --datadir /home/erigon/data/dynamic-kurtosis-sequencer --zkevm.sequencer-resequence-strict=false --zkevm.sequencer-resequence=true --zkevm.sequencer-resequence-reuse-l1-info-index=true"
 
 stop_cdk_erigon_sequencer
 
